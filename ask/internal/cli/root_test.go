@@ -1377,11 +1377,15 @@ func TestShowStderrRedactsSecretWithControlByte(t *testing.T) {
 		t.Errorf("secret shown after stripping:\n%q", w.String())
 	}
 
-	// The header counts the bytes printed after the final redaction.
+	// In a cut tail, the secret is redacted and the header counts the
+	// bytes printed after the final redaction.
 	w.Reset()
 	out = runner.Outcome{Stderr: []byte(strings.Repeat("x", stderrShown) + value + "\n")}
 	showStderr(&w, true, "fake", out, map[string]string{"api_key": value})
 	header, body, _ := strings.Cut(w.String(), "\n")
+	if strings.Contains(body, "secret-value") || !strings.Contains(body, "<redacted:api_key>") {
+		t.Errorf("secret not redacted in a cut tail:\n%q", body)
+	}
 	want := fmt.Sprintf("ask: last %d bytes of fake stderr:", len(body))
 	if header != want {
 		t.Errorf("header %q, want %q", header, want)

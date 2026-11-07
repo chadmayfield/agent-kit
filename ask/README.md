@@ -55,7 +55,7 @@ first.
 `$(go env GOPATH)/bin`, or in `GOBIN` when that is set:
 
 ```sh
-go install github.com/chadmayfield/agent-kit/ask/cmd/ask@latest
+go install -trimpath github.com/chadmayfield/agent-kit/ask/cmd/ask@latest
 ```
 
 Or build it from a clone of this repo. From the repo root:
@@ -94,13 +94,13 @@ If `man ask` still finds nothing, add `~/.local/share/man` to `MANPATH`.
 Ask claude a question, read-only:
 
 ```sh
-ask claude haiku "What does internal/runner/runner.go do?"
+ask claude haiku "What does src/parser.go do?"
 ```
 
 The same run through the short name:
 
 ```sh
-ask-claude haiku "What does internal/runner/runner.go do?"
+ask-claude haiku "What does src/parser.go do?"
 ```
 
 Review a diff. The diff comes in on stdin through `-`, so it never shows in
