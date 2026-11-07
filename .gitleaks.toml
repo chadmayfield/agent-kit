@@ -1,0 +1,5 @@
+title = "agent-kit"
+
+# Use gitleaks' built-in rules.
+[extend]
+useDefault = true

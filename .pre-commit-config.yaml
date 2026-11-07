@@ -1,0 +1,31 @@
+# Local hooks only: nothing is downloaded. gitleaks must be on PATH.
+# Install: pre-commit install --hook-type pre-commit --hook-type pre-push
+# The denylist hooks read the list path from `git config agentkit.denylist`.
+default_install_hook_types: [pre-commit, pre-push]
+repos:
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: gitleaks (staged changes)
+        entry: gitleaks git --pre-commit --staged --redact --no-banner --config .gitleaks.toml
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+      - id: denylist-staged
+        name: denylist (staged changes)
+        entry: scripts/denylist-check.sh --hook pre-commit
+        language: system
+        # Show output on a passing run too, including the "none" warning.
+        verbose: true
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+      - id: denylist-push
+        name: denylist (commits to push)
+        entry: scripts/denylist-check.sh --hook pre-push
+        language: system
+        verbose: true
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
