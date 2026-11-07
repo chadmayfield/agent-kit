@@ -24,7 +24,7 @@ ask-<tool> <model> [prompt...]
 Exit codes: 0 ok, 1 tool failed or no match, 2 bad arguments or refused,
 3 setup failed, 124 timeout, 128+n killed by signal n.
 
-[docs/ask/README.md](docs/ask/README.md) explains every flag, refusal and
+[ask/README.md](ask/README.md) explains every flag, refusal and
 error message.
 
 ## Other services

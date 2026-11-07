@@ -1,0 +1,430 @@
+.TH ASK 1 2026-11-07 "agent-kit" "User Commands"
+.SH NAME
+ask, ask-codex, ask-claude, ask-agy, ask-opencode \- send one prompt to a coding agent CLI
+.SH SYNOPSIS
+.B ask
+.RI [ options ]
+.I tool model
+.RI [ prompt ...]
+.br
+.B ask-codex
+.RI [ options ]
+.I model
+.RI [ prompt ...]
+.br
+.B ask-claude
+.RI [ options ]
+.I model
+.RI [ prompt ...]
+.br
+.B ask-agy
+.RI [ options ]
+.I model
+.RI [ prompt ...]
+.br
+.B ask-opencode
+.RI [ options ]
+.I model
+.RI [ prompt ...]
+.SH DESCRIPTION
+.B ask
+sends one prompt to a coding agent CLI and prints the tool's final message
+on stdout.
+Tool text printed to a terminal has control characters and escape sequences
+removed; piped output is exact.
+Every tool gets the same command line and the same exit codes.
+.PP
+.I tool
+is one of
+.BR codex ,
+.BR claude ,
+.B agy
+or
+.BR opencode .
+Started as
+.BI ask\- tool\fR,
+through a symlink to
+.BR ask ,
+the tool comes from the program name and the model is the first word.
+Only those four names count.
+.PP
+The prompt is the words after the model, joined with spaces.
+A lone
+.B \-
+adds stdin to the prompt.
+Without it,
+.B ask
+never reads stdin.
+Each
+.B \-f
+file is added after that, starting with a line
+.BI "\-\-\- " name " \-\-\-" .
+A
+.B \-f
+path is relative to the folder
+.B ask
+starts in, not the
+.B \-C
+folder.
+The parts are joined with a blank line.
+An empty prompt is an error.
+.PP
+Flags may appear anywhere on the line.
+A
+.B \-\-
+ends the flags, so every word after it is prompt text.
+.PP
+The prompt never goes on the tool's command line.
+claude and codex read it from stdin.
+For agy and opencode,
+.B ask
+writes it to a temp file (folder mode 0700, file mode 0600) and removes
+the folder when the run ends.
+agy gets the instruction
+.RI \(dq "Read the file <path> and follow the instructions in it." \(dq
+opencode gets the file with
+.BI \-f " path"
+and the instruction
+.RI \(dq "Follow the instructions in the attached file." \(dq
+Prompt words typed as arguments do show in
+.BR ask 's
+own command line, which other users can see with
+.BR ps (1).
+Use
+.B \-
+or
+.B \-f
+for private text.
+.PP
+Read\-only is the default.
+Without
+.BR \-\-write ,
+.B ask
+runs a tool only if its read\-only setup passed its test on the installed
+version, compared with the trimmed output of
+.IB tool " \-\-version" .
+Otherwise it refuses with exit 2.
+A read\-only run gets only the secrets listed in
+.BR read_only_secrets ,
+and runs once more if the tool exits non\-zero with no final message.
+A
+.B \-\-write
+run gets every configured secret and never retries.
+.PP
+.B ask
+never runs a tool's login command.
+.SH OPTIONS
+.TP
+.B \-\-write
+Let the tool edit files and run MCP servers and hooks.
+.TP
+.BI \-C " folder" "\fR, \fP\-\-dir " folder
+Run the tool in this folder.
+The default is the current folder.
+.TP
+.BI \-\-timeout " duration"
+Stop the tool after this long, as a Go duration such as
+.BR 90s ,
+.B 5m
+or
+.BR 1h30m .
+The default is the tool's
+.B timeout_seconds
+from the config, or 10 minutes.
+.B 0
+means the default.
+.TP
+.BI \-\-effort " level"
+Reasoning effort.
+claude and agy take
+.BR low ,
+.BR medium ,
+.BR high ,
+.B xhigh
+or
+.BR max .
+codex and opencode take none, and
+.B ask
+refuses the flag for them.
+.TP
+.BI \-\-final " regex"
+Print only the last line of the final message that matches the Go regular
+expression, then the report path.
+Exit 1 when no line matches.
+Cannot be used with
+.BR \-\-no\-report .
+.TP
+.B \-\-dry\-run
+Show the command
+.B ask
+would start, as one line, and run nothing.
+The line is for reading, not for running.
+A secret shows as
+.IB ENV_VAR =< key >\fR,
+never its value.
+The prompt shows as
+.BI <prompt: " N " bytes>
+or, for agy and opencode,
+.BI <prompt: " N " "bytes, in a temp file>"\fR;
+that temp file is removed before
+.B ask
+exits.
+A dry run looks up no secrets, runs no version check, saves no report and
+writes no log line.
+.TP
+.B \-\-no\-report
+Do not save the final message to a report file.
+.TP
+.B \-\-verbose
+After a run that started the tool, print one summary line on stderr.
+A refusal, bad arguments or a setup failure print only the error.
+The line has this shape:
+.RS
+.PP
+.nf
+ask: tool=\fItool\fP model=\fImodel\fP model_id=\fIid\fP
+     reported_model=\fIname\fP duration=\fId\fP tokens=\fIin\fP/\fIout\fP
+     exit=\fIcode\fP report=\fIpath\fP
+.fi
+.RE
+.IP
+The real line has no breaks.
+.B model_id
+is the model passed to the tool after the config short\-name lookup.
+.B reported_model
+is the model the tool says it used, or
+.B none
+when it names none; only claude names one today.
+.B report=none
+means no report was saved.
+After a failed run, also print the last 4 KiB of the tool's stderr, with
+secrets redacted.
+.TP
+.BI \-f " file" "\fR, \fP\-\-file " file
+Add a file's text to the prompt.
+Repeat for more files.
+.TP
+.BR \-h ", " \-\-help
+Print the help text.
+.SH TOOLS
+.TP
+.B claude
+Read\-only runs only on version
+.BR "2.1.319 (Claude Code)" ,
+with the Read, Grep and Glob tools and no hooks, MCP servers or user
+settings.
+After an upgrade, read\-only is refused until the new version is tested.
+With
+.BR \-\-write ,
+claude runs with
+.B "\-\-permission\-mode acceptEdits"
+and without
+.BR \-\-safe\-mode ,
+so user settings load and hooks and MCP servers are not turned off.
+Model aliases such as
+.B haiku
+mean whatever the installed claude maps them to; give a full model ID to
+pin one.
+.TP
+.B codex
+Read\-only is refused; its test was inconclusive.
+With
+.BR \-\-write ,
+codex runs in the
+.B workspace\-write
+sandbox.
+.TP
+.B agy
+Read\-only is refused; it is not tested.
+With
+.BR \-\-write ,
+agy runs with
+.BR "\-\-mode accept\-edits" .
+.TP
+.B opencode
+Read\-only is refused; it has no read\-only setup.
+With
+.BR \-\-write ,
+.B opencode run
+runs with
+.BR \-\-auto .
+Models are
+.IB provider / model
+IDs.
+.PP
+A tool's
+.B models
+map in the config turns a short name into a full model name.
+A name not in the map passes through as typed.
+.SH EXIT STATUS
+.TP
+.B 0
+ok
+.TP
+.B 1
+The tool failed, gave no final message, or
+.B \-\-final
+found no match.
+.TP
+.B 2
+Bad arguments, or
+.B ask
+refused the run.
+.TP
+.B 3
+.BR ask 's
+own setup failed: config, secret lookup, missing binary or report save.
+.TP
+.B 124
+Timeout.
+.TP
+.BI 128+ n
+The tool or
+.B ask
+was killed by signal
+.IR n .
+.PP
+On a timeout or a signal,
+.B ask
+stops the tool's whole process group.
+.SH ENVIRONMENT
+.TP
+.B XDG_CONFIG_HOME
+Base of the config path.
+Used only when it is an absolute path.
+.TP
+.B XDG_STATE_HOME
+Base of the state folder for reports and the log.
+Used only when it is an absolute path.
+.TP
+.B HOME
+Used when the XDG variables are unset.
+.PP
+The tool does not inherit
+.BR ask 's
+whole environment.
+It gets
+.BR PATH ,
+.BR HOME ,
+.BR USER ,
+.BR LANG ,
+.BR TERM ,
+.BR TMPDIR ,
+.BR SHELL ,
+every
+.B XDG_*
+variable, the variables named in the config's
+.BR pass_env ,
+and the secrets for this mode, each in its
+.BR env_var .
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/agent\-kit/config.json
+The config file, or
+.I ~/.config/agent\-kit/config.json
+when
+.B XDG_CONFIG_HOME
+is unset.
+It holds per\-tool
+.BR binary ,
+.BR models ,
+.BR timeout_seconds ,
+.BR secrets ,
+.B read_only_secrets
+and
+.BR pass_env ,
+and a top\-level
+.BR report_days .
+It never holds a secret value.
+A secret's
+.B ref
+is
+.BI keychain: account @ service
+(macOS only),
+.BI env: NAME\fR,
+.BI file: path
+or
+.BI cmd: command\fR.
+Without a config file, each tool is found on PATH and no secrets are
+passed.
+.TP
+.I $XDG_STATE_HOME/ask/reports/
+Report files, or
+.I ~/.local/state/ask/reports/
+when
+.B XDG_STATE_HOME
+is unset.
+Each is named
+.IB time \- tool \- pid \- n .md\fR,
+holds the final message with secrets redacted, and has mode 0600.
+Reports older than
+.B report_days
+(default 30) are deleted.
+.TP
+.I $XDG_STATE_HOME/ask/log.jsonl
+One JSON line per run, mode 0600, with the fields
+.BR time ,
+.BR tool ,
+.BR model ,
+.BR model_id ,
+.BR reported_model ,
+.BR duration_ms ,
+.BR exit ,
+.B input_tokens
+and
+.BR output_tokens .
+It never holds the prompt.
+.SH EXAMPLES
+Ask claude, read\-only:
+.PP
+.RS
+.nf
+ask claude haiku "What does internal/runner/runner.go do?"
+.fi
+.RE
+.PP
+Review a diff sent on stdin:
+.PP
+.RS
+.nf
+git diff main | ask\-claude sonnet "Review this diff for bugs." \-
+.fi
+.RE
+.PP
+Let codex edit files in another folder:
+.PP
+.RS
+.nf
+ask codex my\-model \-\-write \-C ~/src/project \-f task.md
+.fi
+.RE
+.PP
+Print only the verdict line and the report path:
+.PP
+.RS
+.nf
+ask claude haiku \-\-final \(aq^VERDICT:\(aq \-f review\-prompt.md
+.fi
+.RE
+.PP
+Show the command without running it:
+.PP
+.RS
+.nf
+ask opencode \-\-write \-\-dry\-run ollama/example\-model "Fix the typo."
+.fi
+.RE
+.PP
+Send a word that looks like a flag as prompt text:
+.PP
+.RS
+.nf
+ask claude haiku \-\- \-\-verbose is a flag name
+.fi
+.RE
+.SH SEE ALSO
+.BR ps (1)
+.PP
+The full guide is
+.I ask/README.md
+in the agent\-kit repository.

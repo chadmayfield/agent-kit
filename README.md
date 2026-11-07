@@ -1,72 +1,18 @@
 # agent-kit
 
 agent-kit is a set of small command-line tools for coding agents and the
-people who run them. The first tool, `ask`, prints only the other agent's
-final message, with no progress output around it.
+people who run them. Each tool lives in its own folder with its own guide.
 
 | Tool | Status | What it does |
 |---|---|---|
-| `ask` | available | Sends one prompt to codex, claude, agy or opencode and prints the final message |
-| `agent-kit install`, `update` and `doctor` | planned | Installs the kit's files, updates them, and reports what is out of date |
+| [`ask`](ask/README.md) | available | Sends one prompt to codex, claude, agy or opencode and prints the final message |
+| Kit installer | planned | One command that installs every tool in the kit, the skills, shell completions and AGENTS.md, plus `update` and `doctor` for all of them |
 | Skills | planned | Generic skills for coding agents |
 
-[AGENTS.md](AGENTS.md) tells an agent which command to use for what.
-
-## ask
-
-`ask` sends one prompt to a coding agent CLI (codex, claude, agy or
-opencode) and prints the tool's final message. One command line, one exit
-code, the same for every tool, so a script or another agent can call any of
-them the same way.
-
-Read-only is the default. Today only claude runs read-only, and only on
-the version its read-only test passed on. All four tools run with
-`--write`. The guide's
-[What works per tool](docs/ask/README.md#what-works-per-tool) section has
-the details.
-
-### Install
-
-Needs Go. From a clone of this repo:
-
-```sh
-go build -trimpath -o ~/.local/bin/ask ./cmd/ask
-```
-
-For the short names `ask-codex`, `ask-claude`, `ask-agy` and
-`ask-opencode`, and for the man page, see
-[Install](docs/ask/README.md#install) in the guide.
-
-### Quick examples
-
-Ask claude a question, read-only:
-
-```sh
-ask claude haiku "What does internal/runner/runner.go do?"
-```
-
-Review a diff sent on stdin, so it stays out of the process list:
-
-```sh
-git diff main | ask claude sonnet "Review this diff for bugs." -
-```
-
-Let codex edit files:
-
-```sh
-ask codex my-model --write "Add a unit test for the parse function."
-```
-
-### Docs
-
-- [docs/ask/README.md](docs/ask/README.md): the full guide. Every flag,
-  the config file, reports and log, exit codes and troubleshooting.
-- [docs/man/ask.1](docs/man/ask.1): the man page.
-- [docs/read-only-tests.md](docs/read-only-tests.md): how each tool's
-  read-only setup was tested, and the results.
-- [AGENTS.md](AGENTS.md): which command an agent should use. In Claude
-  Code, add an `@` import line for it to your `CLAUDE.md`. For other
-  agents, paste it or link it by hand.
+- [ask/README.md](ask/README.md): install and use `ask`.
+- [AGENTS.md](AGENTS.md): which command an agent should use for what. In
+  Claude Code, add an `@` import line for it to your `CLAUDE.md`. For
+  other agents, paste it or link it by hand.
 
 ## Hooks for contributors
 

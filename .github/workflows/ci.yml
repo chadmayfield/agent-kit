@@ -16,13 +16,17 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: ask
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version-file: ask/go.mod
+          cache-dependency-path: ask/go.sum
       - name: Format check
         run: |
           unformatted="$(gofmt -l .)"
@@ -42,6 +46,7 @@ jobs:
       - name: Build
         run: go build -trimpath ./...
       - name: Denylist script tests
+        working-directory: .
         run: bash scripts/denylist-check_test.sh
 
   gitleaks:
