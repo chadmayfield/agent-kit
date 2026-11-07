@@ -1,5 +1,19 @@
 # agent-kit
 
+agent-kit is a set of small command-line tools for coding agents and the
+people who run them. The first tool, `ask`, prints only the other agent's
+final message, with no progress output around it.
+
+| Tool | Status | What it does |
+|---|---|---|
+| `ask` | available | Sends one prompt to codex, claude, agy or opencode and prints the final message |
+| `agent-kit install`, `update` and `doctor` | planned | Installs the kit's files, updates them, and reports what is out of date |
+| Skills | planned | Generic skills for coding agents |
+
+[AGENTS.md](AGENTS.md) tells an agent which command to use for what.
+
+## ask
+
 `ask` sends one prompt to a coding agent CLI (codex, claude, agy or
 opencode) and prints the tool's final message. One command line, one exit
 code, the same for every tool, so a script or another agent can call any of
@@ -11,7 +25,7 @@ the version its read-only test passed on. All four tools run with
 [What works per tool](docs/ask/README.md#what-works-per-tool) section has
 the details.
 
-## Install
+### Install
 
 Needs Go. From a clone of this repo:
 
@@ -23,7 +37,7 @@ For the short names `ask-codex`, `ask-claude`, `ask-agy` and
 `ask-opencode`, and for the man page, see
 [Install](docs/ask/README.md#install) in the guide.
 
-## Quick examples
+### Quick examples
 
 Ask claude a question, read-only:
 
@@ -43,7 +57,7 @@ Let codex edit files:
 ask codex my-model --write "Add a unit test for the parse function."
 ```
 
-## Docs
+### Docs
 
 - [docs/ask/README.md](docs/ask/README.md): the full guide. Every flag,
   the config file, reports and log, exit codes and troubleshooting.
