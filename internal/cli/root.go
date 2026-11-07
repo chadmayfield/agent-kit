@@ -42,11 +42,15 @@ type Deps struct {
 	Stdin           io.Reader
 	StdinIsTerminal bool
 	Stdout, Stderr  io.Writer
-	Env             func(string) string
-	Now             func() time.Time
-	Pid             int
-	Adapters        map[string]adapter.Adapter
-	Signals         <-chan os.Signal
+	// StdoutIsTerminal and StderrIsTerminal make ask remove control
+	// characters from tool text printed there. Pipes and files get it
+	// unchanged.
+	StdoutIsTerminal, StderrIsTerminal bool
+	Env                                func(string) string
+	Now                                func() time.Time
+	Pid                                int
+	Adapters                           map[string]adapter.Adapter
+	Signals                            <-chan os.Signal
 	// Version returns the output of `<binary> --version`.
 	Version func(binary string) (string, error)
 	// Argv0 is the name ask was started as. ask-<tool> implies the tool.
@@ -795,7 +799,7 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 	}
 
 	if o.verbose && ran && code != ExitOK {
-		showStderr(d.Stderr, tool, out, byKey)
+		showStderr(d.Stderr, d.StderrIsTerminal, tool, out, byKey)
 	}
 
 	now := time.Now
@@ -832,11 +836,18 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 				code, runErr = ExitTool, fmt.Errorf("no line of the final message matched --final %q", o.final)
 			}
 		case report != "":
+			if d.StdoutIsTerminal {
+				line = adapter.StripControl(line)
+			}
 			fmt.Fprintf(d.Stdout, "%s\n%s\n", line, report)
 		}
 	case final != "" && finalRE == nil:
-		fmt.Fprint(d.Stdout, final)
-		if !strings.HasSuffix(final, "\n") {
+		shown := final
+		if d.StdoutIsTerminal {
+			shown = adapter.StripControl(final)
+		}
+		fmt.Fprint(d.Stdout, shown)
+		if !strings.HasSuffix(shown, "\n") {
 			fmt.Fprintln(d.Stdout)
 		}
 	}
@@ -863,8 +874,9 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 // showStderr prints the last stderrShown bytes of the CLI's stderr, with
 // every secret value redacted first, so a cut cannot leave part of one.
 // When the runner kept only the tail, it drops the partial first line
-// before redacting.
-func showStderr(w io.Writer, tool string, out runner.Outcome, byKey map[string]string) {
+// before redacting. When term is true, it removes control characters from
+// the tail before printing it.
+func showStderr(w io.Writer, term bool, tool string, out runner.Outcome, byKey map[string]string) {
 	if out.StdoutTruncated {
 		fmt.Fprintf(w, "ask: %s printed more than 64 MiB on stdout; the rest was dropped\n", tool)
 	}
@@ -885,6 +897,9 @@ func showStderr(w io.Writer, tool string, out runner.Outcome, byKey map[string]s
 		fmt.Fprintf(w, "ask: last %d bytes of %s stderr:\n", len(text), tool)
 	} else {
 		fmt.Fprintf(w, "ask: %s stderr:\n", tool)
+	}
+	if term {
+		text = adapter.StripControl(text)
 	}
 	fmt.Fprint(w, text)
 	if !strings.HasSuffix(text, "\n") {

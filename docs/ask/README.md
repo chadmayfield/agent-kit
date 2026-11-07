@@ -321,6 +321,10 @@ A dry run looks up no secrets, writes no report and adds no log line.
 By default `ask` prints the tool's final message on stdout and nothing
 else. A final message without a trailing newline gets one.
 
+Tool text printed to a terminal has control characters and escape
+sequences removed. Piped or redirected output and the report file keep the
+exact bytes.
+
 With `--final <regex>`, stdout gets two lines: the last matching line of
 the final message, then the path of the report file that holds the whole
 message.

@@ -30,6 +30,8 @@ ask, ask-codex, ask-claude, ask-agy, ask-opencode \- send one prompt to a coding
 .B ask
 sends one prompt to a coding agent CLI and prints the tool's final message
 on stdout.
+Tool text printed to a terminal has control characters and escape sequences
+removed; piped output is exact.
 Every tool gets the same command line and the same exit codes.
 .PP
 .I tool

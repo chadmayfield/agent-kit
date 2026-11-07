@@ -1329,7 +1329,7 @@ func TestShowStderrDropsPartialFirstLineAfterCut(t *testing.T) {
 		StderrTruncated: true,
 	}
 	var w bytes.Buffer
-	showStderr(&w, "fake", out, map[string]string{"api_key": value})
+	showStderr(&w, false, "fake", out, map[string]string{"api_key": value})
 	msg := w.String()
 	if strings.Contains(msg, value[7:]) || strings.Contains(msg, "rest of line") {
 		t.Errorf("partial first line shown after a cut:\n%s", msg)
@@ -1341,14 +1341,14 @@ func TestShowStderrDropsPartialFirstLineAfterCut(t *testing.T) {
 	// A cut tail with no newline is one partial line and shows nothing.
 	w.Reset()
 	out.Stderr = []byte(value[7:] + " no newline")
-	showStderr(&w, "fake", out, map[string]string{"api_key": value})
+	showStderr(&w, false, "fake", out, map[string]string{"api_key": value})
 	if strings.Contains(w.String(), value[7:]) {
 		t.Errorf("partial line shown: %q", w.String())
 	}
 
 	// Without a cut, the first line stays.
 	w.Reset()
-	showStderr(&w, "fake", runner.Outcome{Stderr: []byte("first\nsecond\n")}, nil)
+	showStderr(&w, false, "fake", runner.Outcome{Stderr: []byte("first\nsecond\n")}, nil)
 	if !strings.Contains(w.String(), "first") {
 		t.Errorf("first line dropped without a cut: %q", w.String())
 	}
@@ -1381,5 +1381,68 @@ func TestParseErrorHasOneToolPrefix(t *testing.T) {
 	msg := f.err.String()
 	if strings.Contains(msg, "fake: fake:") || !strings.Contains(msg, "fake: bad output") {
 		t.Errorf("stderr %q: want one tool prefix", msg)
+	}
+}
+
+// escapeOut prints a final message with a title write, a clipboard write
+// and a screen clear.
+const escapeOut = `printf 'RESULT: a\033]0;title\007b\033]52;c;ZXZpbA==\033\\c\033[2Jd\n'`
+
+func TestTerminalStdoutStripsEscapes(t *testing.T) {
+	for _, term := range []bool{true, false} {
+		f := newFake(t, escapeOut, "", adapter.Verification{})
+		f.d.StdoutIsTerminal = term
+		if code := run(t, f.d, "--write", "fake", "m", "hi"); code != 0 {
+			t.Fatalf("terminal=%v: exit %d; stderr %q", term, code, f.err.String())
+		}
+		raw := "RESULT: a\x1b]0;title\x07b\x1b]52;c;ZXZpbA==\x1b\\c\x1b[2Jd"
+		want := raw + "\n"
+		if term {
+			want = "RESULT: abcd\n"
+		}
+		if f.out.String() != want {
+			t.Errorf("terminal=%v: stdout %q, want %q", term, f.out.String(), want)
+		}
+		reps := f.reports(t)
+		if len(reps) != 1 {
+			t.Fatalf("terminal=%v: reports %q", term, reps)
+		}
+		if data, _ := os.ReadFile(reps[0]); string(data) != raw+"\n" {
+			t.Errorf("terminal=%v: report %q, want the exact message", term, data)
+		}
+	}
+}
+
+func TestTerminalFinalLineStripsEscapes(t *testing.T) {
+	for _, term := range []bool{true, false} {
+		f := newFake(t, escapeOut, "", adapter.Verification{})
+		f.d.StdoutIsTerminal = term
+		if code := run(t, f.d, "--write", "--final", "^RESULT:", "fake", "m", "hi"); code != 0 {
+			t.Fatalf("terminal=%v: exit %d; stderr %q", term, code, f.err.String())
+		}
+		want := "RESULT: a\x1b]0;title\x07b\x1b]52;c;ZXZpbA==\x1b\\c\x1b[2Jd"
+		if term {
+			want = "RESULT: abcd"
+		}
+		if lines := strings.Split(f.out.String(), "\n"); lines[0] != want {
+			t.Errorf("terminal=%v: --final line %q, want %q", term, lines[0], want)
+		}
+	}
+}
+
+func TestTerminalStderrTailStripsEscapes(t *testing.T) {
+	for _, term := range []bool{true, false} {
+		f := newFake(t, `printf 'bad \033]0;title\007key\033[2J\n' >&2; exit 1`, "", adapter.Verification{})
+		f.d.StderrIsTerminal = term
+		if code := run(t, f.d, "--write", "--verbose", "fake", "m", "hi"); code != 1 {
+			t.Fatalf("terminal=%v: exit %d", term, code)
+		}
+		want := "bad \x1b]0;title\x07key\x1b[2J\n"
+		if term {
+			want = "bad key\n"
+		}
+		if !strings.Contains(f.err.String(), "stderr:\n"+want) {
+			t.Errorf("terminal=%v: stderr %q, want the tail %q", term, f.err.String(), want)
+		}
 	}
 }

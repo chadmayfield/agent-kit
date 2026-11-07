@@ -20,18 +20,20 @@ func main() {
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 
 	d := cli.Deps{
-		Stdin:           os.Stdin,
-		StdinIsTerminal: isTerminal(os.Stdin),
-		Stdout:          os.Stdout,
-		Stderr:          os.Stderr,
-		Env:             os.Getenv,
-		Now:             time.Now,
-		Pid:             os.Getpid(),
-		Adapters:        adapter.Default(),
-		Signals:         sigs,
-		Version:         binaryVersion,
-		Argv0:           os.Args[0],
-		Environ:         os.Environ,
+		Stdin:            os.Stdin,
+		StdinIsTerminal:  isTerminal(os.Stdin),
+		Stdout:           os.Stdout,
+		Stderr:           os.Stderr,
+		StdoutIsTerminal: isTerminal(os.Stdout),
+		StderrIsTerminal: isTerminal(os.Stderr),
+		Env:              os.Getenv,
+		Now:              time.Now,
+		Pid:              os.Getpid(),
+		Adapters:         adapter.Default(),
+		Signals:          sigs,
+		Version:          binaryVersion,
+		Argv0:            os.Args[0],
+		Environ:          os.Environ,
 	}
 	os.Exit(cli.Execute(cli.NewRootCmd(d)))
 }
