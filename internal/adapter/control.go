@@ -10,12 +10,17 @@ import (
 // escape sequence whole: CSI, OSC, DCS and the other string sequences in
 // their ESC or C1 form, and the short ESC forms. It drops every other C0 or
 // C1 control character, DEL, U+2028, U+2029 and each invalid UTF-8 byte.
-// A string sequence with no terminator loses only its introducer.
+// A C1 introducer counts both as a UTF-8 character and as a raw 8-bit
+// byte. A string sequence ends at BEL, ST or the end of its line.
 func StripControl(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for i := 0; i < len(s); {
 		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 && s[i] >= 0x80 && s[i] <= 0x9f {
+			// A raw 8-bit C1 byte acts as the C1 character of that value.
+			r = rune(s[i])
+		}
 		switch {
 		case r == '\n', r == '\t':
 			b.WriteByte(byte(r))
@@ -79,18 +84,21 @@ func csiLen(s string) int {
 	return len(s)
 }
 
-// stringLen returns the length of a string sequence body through its
-// terminator: BEL, ESC \ or U+009C. It returns 0 when there is none.
+// stringLen returns the length of a string sequence body: through its
+// terminator (BEL, ESC \, or ST as U+009C or the raw byte 0x9c), or up to
+// the end of the line or the text when no terminator comes first.
 func stringLen(s string) int {
-	for n := 0; n < len(s); n++ {
+	for n := 0; n < len(s); {
+		r, size := utf8.DecodeRuneInString(s[n:])
 		switch {
-		case s[n] == 0x07:
-			return n + 1
-		case s[n] == 0x1b && n+1 < len(s) && s[n+1] == '\\':
-			return n + 2
-		case s[n] == 0xc2 && n+1 < len(s) && s[n+1] == 0x9c:
+		case r == '\n':
+			return n
+		case r == 0x07, r == 0x9c, r == utf8.RuneError && size == 1 && s[n] == 0x9c:
+			return n + size
+		case r == 0x1b && n+1 < len(s) && s[n+1] == '\\':
 			return n + 2
 		}
+		n += size
 	}
-	return 0
+	return len(s)
 }

@@ -837,14 +837,14 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 			}
 		case report != "":
 			if d.StdoutIsTerminal {
-				line = adapter.StripControl(line)
+				line = forTerminal(line, byKey)
 			}
 			fmt.Fprintf(d.Stdout, "%s\n%s\n", line, report)
 		}
 	case final != "" && finalRE == nil:
 		shown := final
 		if d.StdoutIsTerminal {
-			shown = adapter.StripControl(final)
+			shown = forTerminal(final, byKey)
 		}
 		fmt.Fprint(d.Stdout, shown)
 		if !strings.HasSuffix(shown, "\n") {
@@ -861,8 +861,13 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 		if shownReported == "" {
 			shownReported = "none"
 		}
+		shownID := modelID
+		if d.StderrIsTerminal {
+			shownReported = forTerminal(shownReported, byKey)
+			shownID = forTerminal(shownID, byKey)
+		}
 		fmt.Fprintf(d.Stderr, "ask: tool=%s model=%s model_id=%s reported_model=%s duration=%s tokens=%d/%d exit=%d report=%s\n",
-			tool, model, modelID, shownReported, duration.Round(time.Millisecond), inTok, outTok, code, shown)
+			tool, model, shownID, shownReported, duration.Round(time.Millisecond), inTok, outTok, code, shown)
 	}
 
 	if code == ExitOK {
@@ -874,8 +879,8 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 // showStderr prints the last stderrShown bytes of the CLI's stderr, with
 // every secret value redacted first, so a cut cannot leave part of one.
 // When the runner kept only the tail, it drops the partial first line
-// before redacting. When term is true, it removes control characters from
-// the tail before printing it.
+// before redacting. When term is true, it removes control characters
+// before redacting, so the header counts the bytes it prints.
 func showStderr(w io.Writer, term bool, tool string, out runner.Outcome, byKey map[string]string) {
 	if out.StdoutTruncated {
 		fmt.Fprintf(w, "ask: %s printed more than 64 MiB on stdout; the rest was dropped\n", tool)
@@ -887,6 +892,9 @@ func showStderr(w io.Writer, term bool, tool string, out runner.Outcome, byKey m
 			raw = string(out.Stderr[nl+1:])
 		}
 	}
+	if term {
+		raw = adapter.StripControl(raw)
+	}
 	text := redact(raw, byKey)
 	if text == "" {
 		return
@@ -897,9 +905,6 @@ func showStderr(w io.Writer, term bool, tool string, out runner.Outcome, byKey m
 		fmt.Fprintf(w, "ask: last %d bytes of %s stderr:\n", len(text), tool)
 	} else {
 		fmt.Fprintf(w, "ask: %s stderr:\n", tool)
-	}
-	if term {
-		text = adapter.StripControl(text)
 	}
 	fmt.Fprint(w, text)
 	if !strings.HasSuffix(text, "\n") {
@@ -922,6 +927,13 @@ func oneWord(model string) bool {
 		}
 	}
 	return true
+}
+
+// forTerminal removes control characters from tool text bound for a
+// terminal, then redacts again, so a secret that an escape sequence split
+// is still caught.
+func forTerminal(text string, byKey map[string]string) string {
+	return redact(adapter.StripControl(text), byKey)
 }
 
 // redactedPrefix starts every marker that redact writes.

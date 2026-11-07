@@ -1446,3 +1446,107 @@ func TestTerminalStderrTailStripsEscapes(t *testing.T) {
 		}
 	}
 }
+
+func TestTerminalReportedModelStripsEscapes(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "claude")
+	body := "#!/bin/sh\n" +
+		`echo '{"type":"system","subtype":"init","model":"example-\u001b]0;title\u0007model\u001b[2J"}'` + "\n" +
+		`echo '{"type":"result","subtype":"success","is_error":false,"result":"answer"}'` + "\n"
+	if err := os.WriteFile(src, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	testenv.Isolate(t, src)
+	for _, term := range []bool{true, false} {
+		var out, errb bytes.Buffer
+		d := Deps{
+			Stdin:            strings.NewReader(""),
+			StdinIsTerminal:  true,
+			Stdout:           &out,
+			Stderr:           &errb,
+			StderrIsTerminal: term,
+			Env:              os.Getenv,
+			Pid:              4242,
+			Adapters:         map[string]adapter.Adapter{"claude": adapter.NewClaude()},
+			Signals:          make(chan os.Signal),
+			Argv0:            "ask",
+		}
+		if code := run(t, d, "--write", "--verbose", "--no-report", "claude", "m", "hi"); code != 0 {
+			t.Fatalf("terminal=%v: exit %d; stderr %q", term, code, errb.String())
+		}
+		want := "reported_model=example-\x1b]0;title\x07model\x1b[2J "
+		if term {
+			want = "reported_model=example-model "
+		}
+		if !strings.Contains(errb.String(), want) {
+			t.Errorf("terminal=%v: stderr %q lacks %q", term, errb.String(), want)
+		}
+	}
+}
+
+// splitSecret prints the secret value from secretsCfg with an escape
+// sequence inside it.
+const splitSecret = `printf 'RESULT: key example-sec\033[0mret-value\n'`
+
+func TestTerminalRedactsSecretSplitByEscape(t *testing.T) {
+	const value = "example-secret-value"
+	for _, extra := range [][]string{nil, {"--final", "^RESULT:"}} {
+		f := newFake(t, splitSecret, secretsCfg, adapter.Verification{})
+		writeSecrets(t, f.home, value)
+		f.d.StdoutIsTerminal = true
+		args := append(append([]string{"--write"}, extra...), "fake", "m", "hi")
+		if code := run(t, f.d, args...); code != 0 {
+			t.Fatalf("%v: exit %d; stderr %q", extra, code, f.err.String())
+		}
+		if got := f.out.String(); strings.Contains(got, value) || !strings.HasPrefix(got, "RESULT: key <redacted:api_key>\n") {
+			t.Errorf("%v: stdout %q, want the secret redacted", extra, got)
+		}
+	}
+
+	g := newFake(t, splitSecret+" >&2; exit 1", secretsCfg, adapter.Verification{})
+	writeSecrets(t, g.home, value)
+	g.d.StderrIsTerminal = true
+	if code := run(t, g.d, "--write", "--verbose", "fake", "m", "hi"); code != 1 {
+		t.Fatalf("stderr tail: exit %d", code)
+	}
+	if got := g.err.String(); strings.Contains(got, value) || !strings.Contains(got, "RESULT: key <redacted:api_key>\n") {
+		t.Errorf("stderr tail %q, want the secret redacted", got)
+	}
+}
+
+func TestTerminalStderrTailHeaderCountsShownBytes(t *testing.T) {
+	script := `i=0; while [ $i -lt 600 ]; do printf '\033[2Jxxxxxxxx\n' >&2; i=$((i+1)); done
+exit 1`
+	f := newFake(t, script, "", adapter.Verification{})
+	f.d.StderrIsTerminal = true
+	if code := run(t, f.d, "--write", "--verbose", "fake", "m", "hi"); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	msg := f.err.String()
+	const head = "ask: last "
+	start := strings.Index(msg, head)
+	if start < 0 {
+		t.Fatalf("no cut header in %q", msg)
+	}
+	var n int
+	if _, err := fmt.Sscanf(msg[start+len(head):], "%d", &n); err != nil {
+		t.Fatal(err)
+	}
+	body := msg[start:]
+	body = body[strings.IndexByte(body, '\n')+1:]
+	if end := strings.Index(body, "ask: tool="); end >= 0 {
+		body = body[:end]
+	}
+	if len(body) != n || strings.Contains(body, "\x1b") {
+		t.Errorf("header says %d bytes, printed %d: %q", n, len(body), body)
+	}
+}
+
+// writeSecrets writes value as both secrets that secretsCfg reads.
+func writeSecrets(t *testing.T, home, value string) {
+	t.Helper()
+	for _, name := range []string{"api-secret", "ro-secret"} {
+		if err := os.WriteFile(filepath.Join(home, name), []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
