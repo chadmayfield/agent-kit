@@ -1,0 +1,52 @@
+{
+  "report_days": 30,
+  "tools": {
+    "codex": {
+      "models": {
+        "m": "example-model"
+      },
+      "timeout_seconds": 600,
+      "secrets": [
+        {
+          "name": "api_key",
+          "env_var": "EXAMPLE_API_KEY",
+          "ref": "keychain:placeholder-account@placeholder-service"
+        }
+      ],
+      "read_only_secrets": [],
+      "pass_env": []
+    },
+    "claude": {
+      "binary": "/opt/example/bin/claude",
+      "timeout_seconds": 900,
+      "secrets": [],
+      "read_only_secrets": [],
+      "pass_env": []
+    },
+    "opencode": {
+      "secrets": [
+        {
+          "name": "api_key",
+          "env_var": "EXAMPLE_API_KEY",
+          "ref": "env:EXAMPLE_SOURCE_VAR"
+        },
+        {
+          "name": "gateway_token",
+          "env_var": "EXAMPLE_GATEWAY_TOKEN",
+          "ref": "cmd:example-secret-tool get https://gateway.placeholder.invalid"
+        }
+      ],
+      "read_only_secrets": ["api_key"],
+      "pass_env": ["EXAMPLE_PASS_VAR"]
+    },
+    "agy": {
+      "secrets": [
+        {
+          "name": "api_key",
+          "env_var": "EXAMPLE_API_KEY",
+          "ref": "file:~/.config/example/api_key"
+        }
+      ]
+    }
+  }
+}
