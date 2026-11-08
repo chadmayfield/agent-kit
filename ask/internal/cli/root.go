@@ -526,7 +526,8 @@ func runAsk(d Deps, o options, args []string) error {
 }
 
 // runTool is the whole run path for one tool. args is tool, model, then
-// the prompt words. It fills st for the log.
+// the prompt words. It fills st for the log. It needs d.Env and d.Now set,
+// which runAsk does.
 func runTool(d Deps, o options, args []string, st *runStats) error {
 	tool, model, words := args[0], args[1], args[2:]
 	a := d.Adapters[tool]

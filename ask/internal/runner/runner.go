@@ -1,3 +1,4 @@
+// Package runner runs a tool CLI as a child process. It targets Unix only.
 package runner
 
 import (

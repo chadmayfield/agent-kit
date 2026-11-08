@@ -31,6 +31,10 @@ const maxSecretBytes = 64 << 10
 // errTooLarge is returned when a lookup returns more than maxSecretBytes.
 var errTooLarge = errors.New("lookup returned too much data")
 
+// errNotRegular is returned when a file: ref names something other than a
+// regular file.
+var errNotRegular = errors.New("not a regular file")
+
 // waitDelay is how long a lookup waits for its output pipes to close after
 // the command is killed or exits.
 const waitDelay = 2 * time.Second
@@ -103,13 +107,12 @@ func readFile(path string) (string, error) {
 		}
 		path = filepath.Join(home, rest)
 	}
-	if fi, err := os.Stat(path); err == nil && !fi.Mode().IsRegular() {
-		return "", errors.New("file is not a regular file")
-	}
 	data, err := readLimited(path)
 	switch {
 	case errors.Is(err, errTooLarge):
 		return "", errTooLarge
+	case errors.Is(err, errNotRegular):
+		return "", errors.New("file is not a regular file")
 	case errors.Is(err, os.ErrNotExist):
 		return "", errors.New("file does not exist")
 	case errors.Is(err, os.ErrPermission):
@@ -120,13 +123,21 @@ func readFile(path string) (string, error) {
 	return string(data), nil
 }
 
-// readLimited reads the file at path, up to maxSecretBytes.
+// readLimited opens path without blocking, checks that the open file is a
+// regular file, and reads up to maxSecretBytes from it.
 func readLimited(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, errNotRegular
+	}
 	data, err := io.ReadAll(io.LimitReader(f, maxSecretBytes+1))
 	if err != nil {
 		return nil, err

@@ -10,7 +10,7 @@ import (
 // escape sequence whole: CSI, OSC, DCS and the other string sequences in
 // their ESC or C1 form, and the short ESC forms. It drops every other C0 or
 // C1 control character, DEL, U+2028, U+2029, the Unicode bidi controls
-// (U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) and each invalid
+// (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) and each invalid
 // UTF-8 byte.
 // A C1 introducer counts both as a UTF-8 character and as a raw 8-bit
 // byte. A string sequence ends at BEL, ST or the end of its line.

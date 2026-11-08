@@ -266,3 +266,21 @@ func TestResolveRefusesLargeAndNonRegular(t *testing.T) {
 		t.Errorf("small command: got %q, %v", v, err)
 	}
 }
+
+func TestReadFileRejectsFIFO(t *testing.T) {
+	home := testenv.Isolate(t)
+	p := filepath.Join(home, "fifo")
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := readFile(p); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil || err.Error() != "file is not a regular file" {
+			t.Fatalf("readFile(fifo) error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("readFile blocked on a FIFO")
+	}
+}
