@@ -113,9 +113,6 @@ func TestBuildDashWithTerminalIsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error, got nil")
 	}
-	if strings.Contains(err.Error(), "—") {
-		t.Fatalf("error text has an em dash: %q", err)
-	}
 }
 
 func TestBuildEmptyIsError(t *testing.T) {

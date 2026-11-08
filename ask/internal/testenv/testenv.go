@@ -10,7 +10,8 @@ import (
 
 // Isolate points HOME and the XDG folders at a fresh temp home, and PATH at
 // a temp bin folder holding copies of the given fake CLI scripts. It fails
-// the test if ask's config, report or log path is outside the temp home.
+// the test if os.UserHomeDir or a path built from the XDG folders is outside
+// the temp home.
 // It uses t.Setenv, so tests that call it cannot run in parallel.
 func Isolate(t *testing.T, fakes ...string) (home string) {
 	t.Helper()

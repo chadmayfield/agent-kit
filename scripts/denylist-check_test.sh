@@ -262,11 +262,12 @@ check --hook pre-push origin "$tmp/remote$n.git" < "$tmp/refs"
 expect "pre-push hook, refs on stdin" 1 "h.txt:1: denylist hit"
 
 # Under pre-commit the first ref arrives in environment variables.
-# check_env <to-ref> <from-ref> <remote>; empty refs count as unset.
+# check_env <to-ref> <from-ref> <remote> [<url>]; empty refs and an empty
+# url count as unset.
 check_env() {
 	code=0
 	out=$(PRE_COMMIT=1 PRE_COMMIT_TO_REF=$1 PRE_COMMIT_FROM_REF=$2 \
-		PRE_COMMIT_REMOTE_NAME=$3 "$script" --hook pre-push 2>&1 < /dev/null) || code=$?
+		PRE_COMMIT_REMOTE_NAME=$3 PRE_COMMIT_REMOTE_URL=${4:-} "$script" --hook pre-push 2>&1 < /dev/null) || code=$?
 	if printf '%s' "$out" | grep -qiE 'placeholder\.invalid|/users/example|192\.0\.2'; then
 		code=99
 		fail "output leaked matched text (pre-commit env)"
@@ -326,13 +327,7 @@ check --hook pre-push split "$tmp/push$n.git" < /dev/null
 expect "split URLs, git hook" 1 "denylist hit (tag)"
 check_env "" "" split
 expect "split URLs, pre-commit with no URL variable" 1 "denylist hit (tag)"
-code=0
-out=$(PRE_COMMIT=1 PRE_COMMIT_REMOTE_NAME=split PRE_COMMIT_REMOTE_URL="$tmp/push$n.git" \
-	"$script" --hook pre-push 2>&1 < /dev/null) || code=$?
-if printf '%s' "$out" | grep -qiE 'placeholder\.invalid|/users/example|192\.0\.2'; then
-	code=99
-	fail "output leaked matched text (split URLs)"
-fi
+check_env "" "" split "$tmp/push$n.git"
 expect "split URLs, pre-commit URL variable" 1 "denylist hit (tag)"
 git push -q split v1
 check --hook pre-push split "$tmp/push$n.git" < /dev/null
