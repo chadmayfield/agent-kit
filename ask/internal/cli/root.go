@@ -494,23 +494,22 @@ type runStats struct {
 // it was. The tool and model are known here; the prompt never goes in the
 // log.
 func runAsk(d Deps, o options, args []string) error {
+	if d.Env == nil {
+		d.Env = os.Getenv
+	}
+	if d.Now == nil {
+		d.Now = time.Now
+	}
 	var st runStats
 	err := runTool(d, o, args, &st)
 	if st.dryRun {
 		return err
 	}
-	env := d.Env
-	if env == nil {
-		env = os.Getenv
-	}
-	state, serr := stateDir(env)
+	state, serr := stateDir(d.Env)
 	if serr != nil {
 		return err
 	}
-	now := time.Now
-	if d.Now != nil {
-		now = d.Now
-	}
+	now := d.Now
 	entry := record.LogEntry{
 		Time: now().UTC(), Tool: args[0], Model: args[1],
 		ModelID: st.modelID, ReportedModel: st.reportedModel,
@@ -560,9 +559,6 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 		resolve = secret.Resolve
 	}
 	env := d.Env
-	if env == nil {
-		env = os.Getenv
-	}
 	environ := os.Environ
 	if d.Environ != nil {
 		environ = d.Environ
@@ -802,10 +798,7 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 		showStderr(d.Stderr, d.StderrIsTerminal, tool, out, byKey)
 	}
 
-	now := time.Now
-	if d.Now != nil {
-		now = d.Now
-	}
+	now := d.Now
 	report := ""
 	if !o.noReport && final != "" {
 		reports := filepath.Join(state, "reports")

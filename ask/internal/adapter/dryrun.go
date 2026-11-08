@@ -66,7 +66,7 @@ func envLabel(entry string, tc config.ToolConfig) string {
 }
 
 // hasControl reports whether s holds a C0 or C1 control character, DEL,
-// U+2028, U+2029 or invalid UTF-8.
+// U+2028, U+2029, a Unicode bidi control or invalid UTF-8.
 func hasControl(s string) bool {
 	for i := 0; i < len(s); {
 		r, size := utf8.DecodeRuneInString(s[i:])
@@ -81,7 +81,8 @@ func hasControl(s string) bool {
 func isControl(r rune, size int) bool {
 	return r == utf8.RuneError && size == 1 ||
 		r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f ||
-		r == 0x2028 || r == 0x2029
+		r == 0x2028 || r == 0x2029 ||
+		r == 0x200e || r == 0x200f || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069
 }
 
 // quoteInert single-quotes s for a POSIX shell and replaces each control

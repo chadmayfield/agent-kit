@@ -1,6 +1,7 @@
 package secret
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -243,5 +244,25 @@ func TestErrorNeverContainsRef(t *testing.T) {
 				t.Errorf("Resolve(%q) error %q contains %q", c.ref, msg, s)
 			}
 		}
+	}
+}
+
+func TestResolveRefusesLargeAndNonRegular(t *testing.T) {
+	dir := t.TempDir()
+	big := filepath.Join(dir, "big")
+	if err := os.WriteFile(big, bytes.Repeat([]byte("a"), maxSecretBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Resolve(config.SecretRef{Name: "k", Ref: "file:" + big}); err == nil {
+		t.Error("file over the cap: want an error")
+	}
+	if _, err := Resolve(config.SecretRef{Name: "k", Ref: "file:" + dir}); err == nil {
+		t.Error("folder: want an error")
+	}
+	if _, err := Resolve(config.SecretRef{Name: "k", Ref: "cmd:head -c 100000 /dev/zero | tr '\\0' a"}); err == nil {
+		t.Error("command output over the cap: want an error")
+	}
+	if v, err := Resolve(config.SecretRef{Name: "k", Ref: "cmd:printf abc"}); err != nil || v != "abc" {
+		t.Errorf("small command: got %q, %v", v, err)
 	}
 }
