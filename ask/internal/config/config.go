@@ -40,8 +40,19 @@ type SecretRef struct {
 	Ref    string `json:"ref"`
 }
 
-// Schemes are the prefixes a SecretRef.Ref may start with.
-var Schemes = []string{"keychain:", "env:", "file:", "cmd:"}
+// schemes are the prefixes a SecretRef.Ref may start with.
+var schemes = []string{"keychain:", "env:", "file:", "cmd:"}
+
+// SplitRef splits ref into its scheme (without the colon) and the text after
+// it. ok is false when the scheme is unknown or nothing follows it.
+func SplitRef(ref string) (scheme, rest string, ok bool) {
+	for _, s := range schemes {
+		if rest, found := strings.CutPrefix(ref, s); found {
+			return strings.TrimSuffix(s, ":"), rest, rest != ""
+		}
+	}
+	return "", "", false
+}
 
 // DefaultPath returns $XDG_CONFIG_HOME/agent-kit/config.json, or
 // $HOME/.config/agent-kit/config.json when XDG_CONFIG_HOME is unset or not
@@ -129,12 +140,8 @@ func (c Config) validate() error {
 }
 
 func validRef(ref string) bool {
-	for _, s := range Schemes {
-		if rest, ok := strings.CutPrefix(ref, s); ok {
-			return rest != ""
-		}
-	}
-	return false
+	_, _, ok := SplitRef(ref)
+	return ok
 }
 
 // BinaryFor returns the absolute path of the CLI to run for tool.

@@ -1,4 +1,5 @@
-// Package runner starts a CLI and collects its output.
+// Package runner starts a CLI and collects its output. It builds on Unix
+// only; runner_unix.go supplies the process group calls.
 //
 // The CLI runs in its own session and process group, and Run stops that
 // whole group. A process that calls setsid or setpgid itself leaves the

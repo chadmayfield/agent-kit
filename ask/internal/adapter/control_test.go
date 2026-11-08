@@ -23,6 +23,9 @@ func TestStripControl(t *testing.T) {
 		{"c1 csi", "a\u009b31mb", "ab"},
 		{"c1 osc", "a\u009d0;t\u009cb", "ab"},
 		{"other c1", "a\u0085b", "ab"},
+		{"bidi override", "a\u202eb\u202cc", "abc"},
+		{"bidi isolate", "a\u2066b\u2069c", "abc"},
+		{"bidi mark", "a\u200fb", "ab"},
 		{"raw c1 csi", "a\x9b31mb", "ab"},
 		{"raw c1 osc", "a\x9d52;c;ZXZpbA==\x07b", "ab"},
 		{"raw c1 osc raw st", "a\x9d0;t\x9cb", "ab"},
@@ -35,5 +38,13 @@ func TestStripControl(t *testing.T) {
 		if got := StripControl(c.in); got != c.want {
 			t.Errorf("%s: StripControl(%q) = %q, want %q", c.name, c.in, got, c.want)
 		}
+	}
+}
+
+func TestQuoteInertEscapesBidi(t *testing.T) {
+	got := quoteInert("a\u202eb\u2066c")
+	want := "'a\\u202eb\\u2066c'"
+	if got != want {
+		t.Fatalf("quoteInert = %q, want %q", got, want)
 	}
 }

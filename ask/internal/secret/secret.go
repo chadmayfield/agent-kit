@@ -4,6 +4,7 @@
 package secret
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -24,6 +25,12 @@ var securityPath = "/usr/bin/security"
 // lookupTimeout bounds each cmd: and keychain: lookup. Tests shorten it.
 var lookupTimeout = 30 * time.Second
 
+// maxSecretBytes is the most a file or command may return.
+const maxSecretBytes = 64 << 10
+
+// errTooLarge is returned when a lookup returns more than maxSecretBytes.
+var errTooLarge = errors.New("lookup returned too much data")
+
 // waitDelay is how long a lookup waits for its output pipes to close after
 // the command is killed or exits.
 const waitDelay = 2 * time.Second
@@ -36,8 +43,8 @@ var (
 // Resolve returns the value ref points to, with one trailing "\r\n" or
 // "\n" removed. An empty value is an error.
 func Resolve(ref config.SecretRef) (string, error) {
-	scheme, rest, ok := strings.Cut(ref.Ref, ":")
-	if !ok || rest == "" {
+	scheme, rest, ok := config.SplitRef(ref.Ref)
+	if !ok {
 		return "", fail(ref, "ref must start with keychain:, env:, file: or cmd: and name something")
 	}
 
@@ -66,8 +73,6 @@ func Resolve(ref config.SecretRef) (string, error) {
 		} else {
 			val, err = keychain(account, service)
 		}
-	default:
-		err = errors.New("ref must start with keychain:, env:, file: or cmd:")
 	}
 	if err != nil {
 		return "", fail(ref, err.Error())
@@ -98,8 +103,13 @@ func readFile(path string) (string, error) {
 		}
 		path = filepath.Join(home, rest)
 	}
-	data, err := os.ReadFile(path)
+	if fi, err := os.Stat(path); err == nil && !fi.Mode().IsRegular() {
+		return "", errors.New("file is not a regular file")
+	}
+	data, err := readLimited(path)
 	switch {
+	case errors.Is(err, errTooLarge):
+		return "", errTooLarge
 	case errors.Is(err, os.ErrNotExist):
 		return "", errors.New("file does not exist")
 	case errors.Is(err, os.ErrPermission):
@@ -108,6 +118,38 @@ func readFile(path string) (string, error) {
 		return "", errors.New("file read failed")
 	}
 	return string(data), nil
+}
+
+// readLimited reads the file at path, up to maxSecretBytes.
+func readLimited(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxSecretBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxSecretBytes {
+		return nil, errTooLarge
+	}
+	return data, nil
+}
+
+// limitedWriter keeps up to max bytes and fails once a write goes past that.
+type limitedWriter struct {
+	buf  bytes.Buffer
+	max  int
+	over bool
+}
+
+func (w *limitedWriter) Write(p []byte) (int, error) {
+	if w.buf.Len()+len(p) > w.max {
+		w.over = true
+		return 0, errTooLarge
+	}
+	return w.buf.Write(p)
 }
 
 // runCmd runs command with /bin/sh -c in its own process group and returns
@@ -133,7 +175,11 @@ func run(what string, group bool, name string, args ...string) (string, error) {
 			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
 	}
-	out, err := cmd.Output()
+	var stdout limitedWriter
+	stdout.max = maxSecretBytes
+	cmd.Stdout = &stdout
+	err := cmd.Run()
+	out := stdout.buf.Bytes()
 	if group && cmd.Process != nil {
 		// The group id stays reserved while any member lives, so this
 		// reaches only leftover children. ESRCH means none are left.
@@ -149,6 +195,9 @@ func run(what string, group bool, name string, args ...string) (string, error) {
 			return "", errLeftover
 		}
 		err = nil
+	}
+	if stdout.over {
+		return "", errTooLarge
 	}
 	if err != nil {
 		return "", commandError(what, err)

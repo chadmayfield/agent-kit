@@ -50,7 +50,7 @@ published=--remotes
 # Patterns stay in files and reach grep through -f, never through argv.
 load_list() {
 	local list=$1 line n=0
-	[ -f "$1" ] && [ -r "$1" ] || die "denylist not found or not readable"
+	[ -f "$list" ] && [ -r "$list" ] || die "denylist not found or not readable"
 	: > "$work/fixed"
 	: > "$work/re"
 	while IFS= read -r line || [ -n "$line" ]; do
