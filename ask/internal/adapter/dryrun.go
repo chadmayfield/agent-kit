@@ -82,7 +82,7 @@ func isControl(r rune, size int) bool {
 	return r == utf8.RuneError && size == 1 ||
 		r < 0x20 || r == 0x7f || r >= 0x80 && r <= 0x9f ||
 		r == 0x2028 || r == 0x2029 ||
-		r == 0x200e || r == 0x200f || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069
+		r == 0x061c || r == 0x200e || r == 0x200f || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069
 }
 
 // quoteInert single-quotes s for a POSIX shell and replaces each control

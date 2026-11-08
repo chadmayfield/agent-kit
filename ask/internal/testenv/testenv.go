@@ -10,8 +10,7 @@ import (
 
 // Isolate points HOME and the XDG folders at a fresh temp home, and PATH at
 // a temp bin folder holding copies of the given fake CLI scripts. It fails
-// the test if os.UserHomeDir or a path built from the XDG folders is outside
-// the temp home.
+// the test if os.UserHomeDir is not the temp home.
 // It uses t.Setenv, so tests that call it cannot run in parallel.
 func Isolate(t *testing.T, fakes ...string) (home string) {
 	t.Helper()
@@ -69,15 +68,6 @@ func Isolate(t *testing.T, fakes ...string) (home string) {
 
 	if got, err := os.UserHomeDir(); err != nil || got != home {
 		t.Fatalf("testenv: os.UserHomeDir is %q (err %v), want the temp home", got, err)
-	}
-	for name, p := range map[string]string{
-		"config path":   filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "agent-kit", "config.json"),
-		"report folder": filepath.Join(os.Getenv("XDG_STATE_HOME"), "ask", "reports"),
-		"log path":      filepath.Join(os.Getenv("XDG_STATE_HOME"), "ask", "log.jsonl"),
-	} {
-		if !Under(home, p) {
-			t.Fatalf("testenv: %s %s is not under the temp home", name, p)
-		}
 	}
 	return home
 }

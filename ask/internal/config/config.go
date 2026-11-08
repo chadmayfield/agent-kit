@@ -47,8 +47,8 @@ var schemes = []string{"keychain:", "env:", "file:", "cmd:"}
 // it. ok is false when the scheme is unknown or nothing follows it.
 func SplitRef(ref string) (scheme, rest string, ok bool) {
 	for _, s := range schemes {
-		if rest, found := strings.CutPrefix(ref, s); found {
-			return strings.TrimSuffix(s, ":"), rest, rest != ""
+		if after, found := strings.CutPrefix(ref, s); found {
+			return strings.TrimSuffix(s, ":"), after, after != ""
 		}
 	}
 	return "", "", false
