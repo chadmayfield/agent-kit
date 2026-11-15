@@ -5,7 +5,7 @@ people who run them. Each tool lives in its own folder with its own guide.
 
 | Tool | Status | What it does |
 |---|---|---|
-| [`ask`](ask/README.md) | available | Sends one prompt to codex, claude, agy or opencode and prints the final message |
+| [`ask`](ask/README.md) | available | Sends one prompt to codex, claude, agy or opencode and prints the final message. `ask usage` shows each tool's rate limit windows, and `ask models` lists their models |
 | Kit installer | planned | One command that installs every tool in the kit, the skills, shell completions and AGENTS.md, plus `update` and `doctor` for all of them |
 | Skills | planned | Generic skills for coding agents |
 

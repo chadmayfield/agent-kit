@@ -251,7 +251,7 @@ func (f fakeAdapter) Parse(stdout []byte) (adapter.Result, error) {
 
 const tested = "fake 1.0.0"
 
-var verified = adapter.Verification{OK: true, TestedVersion: tested}
+var verified = adapter.Verification{OK: true, LastTested: tested}
 
 // promptMarker is prompt text that must never reach a log or report.
 const promptMarker = "PROMPT-MARKER-7f3a"
@@ -367,15 +367,15 @@ func TestReadOnlyRefusedWhenUnverified(t *testing.T) {
 	}
 }
 
-func TestReadOnlyRefusedOnVersionChange(t *testing.T) {
+func TestReadOnlyRefusedOnMajorVersionChange(t *testing.T) {
 	f := newFake(t, `echo answer`, "", verified)
 	var asked string
-	f.d.Version = func(bin string) (string, error) { asked = bin; return "fake 1.1.0", nil }
+	f.d.Version = func(bin string) (string, error) { asked = bin; return "fake 2.0.0", nil }
 	if code := run(t, f.d, "fake", "m", "hi"); code != 2 {
 		t.Fatalf("exit %d, want 2", code)
 	}
 	if f.runs(t) != 0 {
-		t.Fatal("the CLI ran after a version change")
+		t.Fatal("the CLI ran after a major version change")
 	}
 	if filepath.Base(asked) != "fake" {
 		t.Errorf("version asked of %q, want the fake binary", asked)
@@ -387,33 +387,41 @@ func TestReadOnlyRefusedOnVersionChange(t *testing.T) {
 		t.Fatalf("version error: exit %d, want 2", code)
 	}
 
-	// The tested version runs.
-	f.d.Version = func(string) (string, error) { return tested, nil }
-	if code := run(t, f.d, "fake", "m", "hi"); code != 0 {
-		t.Fatalf("tested version: exit %d, want 0; stderr %q", code, f.err.String())
+	// The tested version runs, and so does a later one with the same
+	// major number.
+	for _, ver := range []string{tested, "fake 1.7.3"} {
+		f.d.Version = func(string) (string, error) { return ver, nil }
+		if code := run(t, f.d, "fake", "m", "hi"); code != 0 {
+			t.Fatalf("version %q: exit %d, want 0; stderr %q", ver, code, f.err.String())
+		}
 	}
 }
 
-func TestClaudeReadOnlyRefusedOnOtherVersion(t *testing.T) {
-	const testedClaude = "2.1.319 (Claude Code)"
-	f := newFake(t, `echo answer`, "", verified)
-	// A fake claude on the isolated PATH, driven by the real adapter.
-	src := filepath.Join(t.TempDir(), "claude")
-	body := "#!/bin/sh\necho run >> \"$HOME/ran\"\n" +
-		`echo '{"type":"result","subtype":"success","is_error":false,"result":"answer"}'` + "\n"
-	if err := os.WriteFile(src, []byte(body), 0o700); err != nil {
-		t.Fatal(err)
+// claudeInit is the init event a clean read-only claude run sends first.
+const claudeInit = `{"type":"system","subtype":"init","tools":["Read","Grep","Glob"],"mcp_servers":[],"model":"example-model"}`
+
+// claudeResult is a successful result event.
+const claudeResult = `{"type":"result","subtype":"success","is_error":false,"result":"answer"}`
+
+// installFakeClaude puts a fake claude on the isolated PATH. It records
+// each run in $HOME/ran and prints lines to stdout.
+func installFakeClaude(t *testing.T, f *fakeRun, lines ...string) {
+	t.Helper()
+	body := "#!/bin/sh\necho run >> \"$HOME/ran\"\n"
+	for _, l := range lines {
+		body += "echo '" + l + "'\n"
 	}
-	data, err := os.ReadFile(src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(f.home, "bin", "claude"), data, 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(f.home, "bin", "claude"), []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	f.d.Adapters = map[string]adapter.Adapter{"claude": adapter.NewClaude()}
+}
 
-	for _, ver := range []string{"2.1.320 (Claude Code)", "2.1.319", "2.1.318 (Claude Code)", ""} {
+func TestClaudeReadOnlyRefusedOnOtherVersion(t *testing.T) {
+	f := newFake(t, `echo answer`, "", verified)
+	installFakeClaude(t, f, claudeInit, claudeResult)
+
+	for _, ver := range []string{"3.0.0 (Claude Code)", "1.9.9 (Claude Code)", "Claude Code", ""} {
 		f.d.Version = func(string) (string, error) { return ver, nil }
 		if code := run(t, f.d, "--no-report", "claude", "m", "hi"); code != 2 {
 			t.Fatalf("version %q: exit %d, want 2", ver, code)
@@ -423,12 +431,58 @@ func TestClaudeReadOnlyRefusedOnOtherVersion(t *testing.T) {
 		}
 	}
 
-	f.d.Version = func(string) (string, error) { return testedClaude, nil }
-	if code := run(t, f.d, "--no-report", "claude", "m", "hi"); code != 0 {
-		t.Fatalf("tested version: exit %d, want 0; stderr %q", code, f.err.String())
+	ran := 0
+	for _, ver := range []string{"2.1.319 (Claude Code)", "2.1.325 (Claude Code)", "2.9.0 (Claude Code)"} {
+		f.d.Version = func(string) (string, error) { return ver, nil }
+		if code := run(t, f.d, "--no-report", "claude", "m", "hi"); code != 0 {
+			t.Fatalf("version %q: exit %d, want 0; stderr %q", ver, code, f.err.String())
+		}
+		ran++
+		if f.runs(t) != ran {
+			t.Errorf("version %q: claude ran %d times, want %d", ver, f.runs(t), ran)
+		}
 	}
-	if f.runs(t) != 1 {
-		t.Errorf("tested version: claude ran %d times, want 1", f.runs(t))
+}
+
+func TestClaudeReadOnlyGuard(t *testing.T) {
+	cases := map[string][]string{
+		"hook event":  {claudeInit, `{"type":"system","subtype":"hook_started","hook_name":"x"}`, claudeResult},
+		"hook first":  {`{"type":"system","subtype":"hook_response"}`, claudeInit, claudeResult},
+		"extra tool":  {`{"type":"system","subtype":"init","tools":["Read","Bash"],"mcp_servers":[]}`, claudeResult},
+		"mcp server":  {`{"type":"system","subtype":"init","tools":["Read"],"mcp_servers":[{"name":"x","status":"connected"}]}`, claudeResult},
+		"no tools":    {`{"type":"system","subtype":"init","mcp_servers":[]}`, claudeResult},
+		"no init":     {claudeResult},
+		"bad json":    {claudeInit, `{"type":`, claudeResult},
+		"other first": {`{"type":"assistant"}`, claudeInit, claudeResult},
+	}
+	for name, lines := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t, `echo answer`, "", verified)
+			installFakeClaude(t, f, lines...)
+			f.d.Version = func(string) (string, error) { return "2.1.325 (Claude Code)", nil }
+			code := run(t, f.d, "claude", "m", "hi")
+			if code != 2 {
+				t.Fatalf("exit %d, want 2; stderr %q", code, f.err.String())
+			}
+			if !strings.Contains(f.err.String(), "read-only guard stopped claude") {
+				t.Errorf("stderr %q does not name the guard", f.err.String())
+			}
+			if f.out.Len() != 0 {
+				t.Errorf("stdout not empty: %q", f.out.String())
+			}
+			if f.runs(t) != 1 {
+				t.Errorf("claude ran %d times, want 1 (no retry after a guard stop)", f.runs(t))
+			}
+			if !strings.Contains(f.logText(t), `"guard":`) {
+				t.Error("the log entry has no guard field")
+			}
+		})
+	}
+	// --write runs have no guard.
+	f := newFake(t, `echo answer`, "", verified)
+	installFakeClaude(t, f, claudeResult)
+	if code := run(t, f.d, "--write", "--no-report", "claude", "m", "hi"); code != 0 {
+		t.Fatalf("--write: exit %d, want 0; stderr %q", code, f.err.String())
 	}
 }
 
@@ -648,7 +702,7 @@ func TestDryRunRunsNothing(t *testing.T) {
 	if out := f.out.String(); strings.Contains(out, "EXAMPLE_API_KEY") || !strings.Contains(out, "EXAMPLE_RO_TOKEN=<ro_key>") {
 		t.Errorf("read-only dry run %q", out)
 	}
-	if !strings.Contains(f.err.String(), `read-only: verified for "fake 1.0.0"`) {
+	if !strings.Contains(f.err.String(), `read-only: verified for the major version of "fake 1.0.0"`) {
 		t.Errorf("stderr %q lacks the gate status", f.err.String())
 	}
 
@@ -1586,5 +1640,32 @@ func writeSecrets(t *testing.T, home, value string) {
 		if err := os.WriteFile(filepath.Join(home, name), []byte(value), 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestClaudeFailureBeforeInitIsAnOrdinaryFailure(t *testing.T) {
+	for name, line := range map[string]string{
+		"error result": `{"type":"result","subtype":"error_during_execution","is_error":true}`,
+		"plain text":   `Error: invalid API key`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFake(t, `echo answer`, "", verified)
+			body := "#!/bin/sh\necho run >> \"$HOME/ran\"\necho '" + line + "'\nexit 1\n"
+			if err := os.WriteFile(filepath.Join(f.home, "bin", "claude"), []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			f.d.Adapters = map[string]adapter.Adapter{"claude": adapter.NewClaude()}
+			f.d.Version = func(string) (string, error) { return "2.1.325 (Claude Code)", nil }
+			code := run(t, f.d, "--no-report", "claude", "m", "hi")
+			if code != 1 {
+				t.Fatalf("exit %d, want 1; stderr %q", code, f.err.String())
+			}
+			if strings.Contains(f.err.String(), "guard") {
+				t.Errorf("reported as a guard stop: %q", f.err.String())
+			}
+			if f.runs(t) != 2 {
+				t.Errorf("claude ran %d times, want 2 (one retry)", f.runs(t))
+			}
+		})
 	}
 }

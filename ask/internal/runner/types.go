@@ -19,4 +19,18 @@ type Invocation struct {
 	// Cleanup removes anything Build created, such as a temp prompt file.
 	// It may be nil, and it runs on every exit path, including signals.
 	Cleanup func()
+	// Guard, when set, checks stdout line by line while the CLI runs. Run
+	// stops the CLI on the first error it returns.
+	Guard Guard
+}
+
+// Guard checks a CLI's stdout while it runs.
+type Guard interface {
+	// Line gets each complete stdout line, without its newline, in order.
+	// A line longer than maxGuardLine stops the CLI without reaching Line.
+	// A non-nil error stops the CLI.
+	Line(line []byte) error
+	// End runs once after a CLI that exited by itself with status 0, when
+	// every Line call returned nil. A non-nil error fails the run.
+	End() error
 }

@@ -45,7 +45,7 @@ func (c Codex) Build(req Request, tc config.ToolConfig) (runner.Invocation, erro
 	}
 	model := ResolveModel(req.Model, tc)
 
-	args := []string{"exec", "--json", "--ephemeral", "--skip-git-repo-check"}
+	args := []string{"exec", "--json", "--skip-git-repo-check"}
 	sandbox := "workspace-write"
 	if !req.Write {
 		args = append(args, "--ignore-user-config", "--ignore-rules")

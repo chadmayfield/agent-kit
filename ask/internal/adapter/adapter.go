@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/chadmayfield/agent-kit/ask/internal/config"
 	"github.com/chadmayfield/agent-kit/ask/internal/runner"
@@ -39,10 +41,85 @@ func ResolveModel(model string, tc config.ToolConfig) string {
 }
 
 // Verification records whether a setup passed its test, and on which CLI
-// version. A different version at run time means the test no longer counts.
+// version. The test counts for every version with the same major number as
+// LastTested. A different major version means the test no longer counts.
 type Verification struct {
-	OK            bool
-	TestedVersion string
+	OK bool
+	// LastTested is the trimmed `<binary> --version` output of the install
+	// where the test last passed.
+	LastTested string
+}
+
+// Covers reports whether the test also counts for version: both must name
+// the same major version.
+func (v Verification) Covers(version string) bool {
+	want, ok := MajorVersion(v.LastTested)
+	if !ok {
+		return false
+	}
+	got, ok := MajorVersion(version)
+	return ok && got == want
+}
+
+// Version is one version number found in a CLI's --version output.
+type Version struct {
+	// Nums holds major, minor and patch. A two-part version has patch 0.
+	Nums [3]int
+	// Pre is true for a pre-release, such as 3.0.0-beta.
+	Pre bool
+}
+
+// FindVersions returns every version-like word in s, in order. A word may
+// be wrapped in brackets or end in punctuation, may start with "v", and may
+// carry a "-..." pre-release or "+..." build suffix: "2.1.325",
+// "(3.0.0)", "v1.1.10-beta," all count.
+func FindVersions(s string) []Version {
+	var out []Version
+	for _, word := range strings.Fields(s) {
+		word = strings.Trim(word, "()[]{}<>,;:'\"")
+		word = strings.TrimPrefix(word, "v")
+		pre := false
+		if i := strings.IndexAny(word, "-+"); i > 0 {
+			pre = word[i] == '-'
+			word = word[:i]
+		}
+		parts := strings.Split(word, ".")
+		if len(parts) < 2 || len(parts) > 3 {
+			continue
+		}
+		var v Version
+		ok := true
+		for i, p := range parts {
+			n, err := strconv.Atoi(p)
+			if err != nil || n < 0 || p == "" || (len(p) > 1 && p[0] == '0') {
+				ok = false
+				break
+			}
+			v.Nums[i] = n
+		}
+		if ok {
+			v.Pre = pre
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// MajorVersion returns the major number of the version in s, such as 2 in
+// "2.1.325 (Claude Code)" or 0 in "codex-cli 0.163.0". It fails when s has
+// no version, or when its versions name different major numbers, so a
+// stray number in a notice can never pick the major for the real version.
+func MajorVersion(s string) (int, bool) {
+	vs := FindVersions(s)
+	if len(vs) == 0 {
+		return 0, false
+	}
+	for _, v := range vs[1:] {
+		if v.Nums[0] != vs[0].Nums[0] {
+			return 0, false
+		}
+	}
+	return vs[0].Nums[0], true
 }
 
 // Adapter knows one CLI. Adapters never see secrets: the cli layer adds the

@@ -1,8 +1,9 @@
 # Read-only tests
 
 Without `--write`, `ask` runs a tool only if its read-only setup passed a
-live test on the installed version of that tool. This page describes that
-test and what it found.
+live test on the installed major version of that tool. This page
+describes that test, what it found, and the guard that checks each
+read-only claude run.
 
 ## Results
 
@@ -13,20 +14,33 @@ test and what it found.
 | agy | none | not tested |
 | opencode | none | not tested |
 
-A verified setup counts only for the exact version string it was tested on.
-`ask` compares the trimmed output of `<binary> --version` with that string.
-After an upgrade, `ask` refuses read-only runs again until the new version
-passes the same test.
+A verified setup counts for every version with the same major number as
+the one it was tested on. `ask` reads the major number from the trimmed
+output of `<binary> --version`. After a major upgrade, `ask` refuses
+read-only runs again until the new version passes the same test.
+
+Within a major version, a guard checks every read-only claude run instead
+of a new test per release. See [The guard](#the-guard).
+
+On 2026-11-15, five read-only haiku runs on `2.1.325 (Claude Code)`
+passed the guard with exit 0. The last three ran against the guard as it
+stands now: a short reply, a run that used Grep and Read, and a run that
+used Glob. That shows the guard accepts real claude output on that
+version. It is not the full trap test, which last ran on 2.1.319.
 
 ### claude
 
 The read-only argv is:
 
 ```
-claude -p --output-format stream-json --verbose --model <model> --safe-mode --restricted --strict-mcp-config --no-chrome --tools Read,Grep,Glob --no-session-persistence
+claude -p --output-format stream-json --verbose --model <model> --safe-mode --restricted --strict-mcp-config --no-chrome --tools Read,Grep,Glob --include-hook-events
 ```
 
-The prompt goes on stdin.
+The prompt goes on stdin. The 2.1.319 test ran with
+`--no-session-persistence` and without `--include-hook-events`. `ask` now
+lets claude save the session so usage trackers count it, and asks for hook
+events so the guard can see them. Neither flag changes which tools, hooks
+or MCP servers load.
 
 Each flag alone failed the hook check:
 
@@ -60,7 +74,7 @@ needs that file, pass it with `-f CLAUDE.md`.
 The read-only argv is:
 
 ```
-codex exec --json --ephemeral --skip-git-repo-check --ignore-user-config --ignore-rules -m <model> -C <dir> -s read-only -
+codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules -m <model> -C <dir> -s read-only -
 ```
 
 codex stays unverified for these reasons:
@@ -75,6 +89,42 @@ codex stays unverified for these reasons:
 - User skills still load under `--ignore-user-config`. The model read a
   user skill file in every read-only run. Reads are allowed in read-only
   mode, but user skills still steer the model.
+
+The 2026-11-07 runs used `--ephemeral`. `ask` no longer passes it, so the
+next test must use the command line above.
+
+### The guard
+
+Each read-only claude run has a guard that reads claude's output as it
+arrives. `ask` stops claude, discards its answer, logs a `guard` field and
+exits 2 when:
+
+- an event other than `result` arrives before `system` / `init`, or the
+  `init` event has no `tools` or `mcp_servers` list, or a JSON event has
+  an unexpected shape
+- the `init` event lists a tool other than Read, Grep and Glob, or any MCP
+  server
+- any event whose type or subtype contains `hook` appears
+- a stdout line is longer than 64 MiB (the most the parser reads)
+- claude exits 0 after a non-blank stdout line that is not JSON, or
+  without an `init` event
+
+A claude that exits non-zero on its own keeps that failure (exit 1, one
+retry), even after an error line or a `result` event before `init`. A
+non-JSON line cannot be an event, so it fails only a run that would
+otherwise succeed. A line cut short by a timeout or a signal is not
+checked.
+
+The guard reads claude's output while claude runs; it does not hold claude
+back. It sees only what claude reports. A `SessionStart` hook or an MCP
+server that leaked in may have started before the `init` event arrived, and
+nothing stops claude from acting between printing an event and `ask`
+killing it. In practice the model's first reply takes far longer than the
+check. That gap is why a major version still needs the full test once.
+
+The shape of claude's hook events was not checked against a live run. The
+guard matches any type or subtype that contains `hook`, so a different name
+for those events would slip past only if it left out that word.
 
 ### agy and opencode
 
