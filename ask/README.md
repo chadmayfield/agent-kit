@@ -18,6 +18,7 @@ The man page is [docs/ask.1](docs/ask.1). Read it with
 - [Prompt input](#prompt-input)
 - [Models and short names](#models-and-short-names)
 - [ask models and ask usage](#ask-models-and-ask-usage)
+- [ask review](#ask-review)
 - [Flags](#flags)
 - [Output](#output)
 - [Config file](#config-file)
@@ -389,6 +390,87 @@ trackers that read those files count `ask` runs too. claude saves to
 `~/.gemini/antigravity-cli/conversations` and opencode to its
 `opencode.db`. Those transcripts hold the prompt, and the runs show up in
 each tool's list of sessions to resume.
+
+## ask review
+
+`ask review` sends one prompt to claude, codex and agy at once and prints
+their answers together:
+
+```sh
+ask review --claude opus --codex example-codex-model --agy example-agy-model \
+  --as code "Review internal/workspace for bugs."
+```
+
+Any prompt works, built the same way as for `ask`: the words after the
+flags, `-f` files, and a lone `-` for stdin. Each tool gets the same text.
+
+| Flag | What it does |
+|---|---|
+| `--claude <model>`, `--codex <model>`, `--agy <model>` | Review with that tool and model. Short names from the tool's `models` map work. A tool without a model from a flag or from `review.models` in the config is left out. At least one is needed. |
+| `--as <kind>` | Put a preset instruction in front of the prompt: `adversarial`, `code`, `docs` or `security`, or a kind from `review.presets`. Without it, the prompt goes as written. |
+| `--json` | Print JSON instead of text. |
+| `-C`, `--dir <folder>` | Review this folder. Default: the current folder. |
+| `--timeout <duration>` | Stop each tool after this long. Default: the tool's `timeout_seconds`, or 10m. |
+| `-f`, `--file <file>` | Add a file's text to the prompt. Repeat for more files. |
+
+The config can set default models and add or change presets:
+
+```json
+{ "review": {
+    "models": { "claude": "opus", "codex": "example-codex-model" },
+    "presets": { "plan": "Review this plan for gaps and risky steps." } } }
+```
+
+### How each tool runs
+
+Every tool runs with its read-only setup and its read-only secrets, never
+with `--write`.
+
+- A tool whose read-only setup is verified for the installed version runs
+  in the real folder. Today that is claude, with its guard.
+- Any other tool runs in a throwaway copy of the folder: a new private
+  temp folder (mode 0700) that `ask` removes afterwards. Its read-only
+  setup is unverified, so `ask` takes a fingerprint of the copy before and
+  after. If anything changed, that review fails with `changed files` and
+  lists up to 10 of them.
+
+What goes into the copy:
+
+- Files and folders keep their permission bits. FIFOs, sockets and devices
+  are left out.
+- A symlink is kept only if it is relative and resolves inside the folder.
+  It is written as the plain relative path to its target. Absolute,
+  dangling and outward links are left out.
+- `.git` is copied, so a reviewer can read history and diffs. Every git
+  folder, found by its name or by holding `HEAD`, `objects/` and `refs/`
+  (a bare repository, say), has each config lose its remotes, URL
+  rewrites, credential helpers, includes and `core.worktree`, so a plain
+  `git push` has nowhere to go. `commondir`, `gitdir`,
+  `objects/info/alternates`, a `.git` file or symlink that points
+  elsewhere, and any symlink inside a git folder are left out.
+- A folder over 512 MiB or 50,000 entries is refused for that tool.
+
+The copy protects the folder under review, not the rest of the machine. A
+tool still has network access, and could push to an explicit URL with your
+SSH keys or write to an absolute path if its own sandbox allows it. Only a
+verified read-only setup closes that.
+
+### Output
+
+Text output has one block per tool, in the order claude, codex, agy, then
+a summary: tool, model ID, where it ran (`read-only` or `copy`), exit
+code, time, tokens and report path. Each tool's run is logged and saves
+its own report as usual, and the whole review is saved as a combined
+report whose path ends the output.
+
+`--json` prints `{"reviews": [...], "report": "<path>"}`. Each review has
+`tool`, `model`, `model_id`, `mode`, `exit`, `error`, `final`, `report`,
+`duration_ms`, `input_tokens`, `output_tokens` and `changed_files`.
+
+Exit codes: 0 when every review succeeded, 1 when any failed (the others
+still print), 2 for bad arguments, 3 when `ask`'s own setup fails before
+any tool starts, and 128+n when a signal stops the review. A signal stops
+every tool.
 
 ## Flags
 

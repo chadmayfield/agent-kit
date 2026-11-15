@@ -117,7 +117,8 @@ each read-only claude run and stops it if claude loads a hook, an MCP
 server or a tool other than Read, Grep and Glob.
 
 ask models lists each tool's models. ask usage shows each tool's rate
-limit windows; add --runs for ask's own run totals.
+limit windows; add --runs for ask's own run totals. ask review sends one
+prompt to claude, codex and agy at once and shows their reviews together.
 
 Tools: %s
 
