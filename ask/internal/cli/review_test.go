@@ -504,3 +504,32 @@ func TestReviewAfterSignalKeepsRunStatus(t *testing.T) {
 		t.Errorf("codex result %+v; want the interrupt, not a cancelled copy check", r)
 	}
 }
+
+func TestReviewRedactsCleanupWarning(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("uses chflags uchg to make cleanup fail")
+	}
+	const value = "example-secret-value"
+	f, project := newReview(t, map[string]string{
+		"codex": `/bin/cat >/dev/null; : > "$EXAMPLE_RO_TOKEN"; /usr/bin/chflags uchg "$EXAMPLE_RO_TOKEN"; echo ok`,
+	})
+	roSecretConfig(t, f, "codex")
+	writeSecrets(t, f.home, value)
+	t.Cleanup(func() {
+		ents, _ := os.ReadDir(os.TempDir())
+		for _, e := range ents {
+			if strings.HasPrefix(e.Name(), "ask-review-") {
+				p := filepath.Join(os.TempDir(), e.Name())
+				_ = exec.Command("/usr/bin/chflags", "-R", "nouchg", p).Run()
+				_ = os.RemoveAll(p)
+			}
+		}
+	})
+	_ = run(t, f.d, "review", "-C", project, "--codex", "sol", "hi")
+	if !strings.Contains(f.err.String(), "remove the copy folder") {
+		t.Fatalf("cleanup did not fail as set up: stderr %q", f.err.String())
+	}
+	if strings.Contains(f.err.String(), value) {
+		t.Errorf("the cleanup warning leaked the secret: %q", f.err.String())
+	}
+}

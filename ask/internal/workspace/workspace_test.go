@@ -922,3 +922,45 @@ func TestCleanGitConfigLongContinuation(t *testing.T) {
 		t.Errorf("cancelled clean: %v", err)
 	}
 }
+
+func TestCopyCleansReadOnlyGitConfig(t *testing.T) {
+	src, _ := tree(t)
+	p := filepath.Join(src, ".git", "config")
+	if err := os.WriteFile(p, []byte("[core]\n\tbare = false\n[remote \"o\"]\n\turl = /outside\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
+	if err != nil {
+		t.Fatalf("a read-only git config stopped the copy: %v", err)
+	}
+	defer func() { _ = cleanup() }()
+	cp := filepath.Join(dir, ".git", "config")
+	data, _ := os.ReadFile(cp)
+	if strings.Contains(string(data), "outside") {
+		t.Errorf("config not cleaned:\n%s", data)
+	}
+	if fi, _ := os.Stat(cp); fi.Mode().Perm() != 0o444 {
+		t.Errorf("config mode %v, want 0444 kept", fi.Mode().Perm())
+	}
+}
+
+func TestCopyFileRefusesSymlinkSource(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "outside.txt")
+	if err := os.WriteFile(target, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "swapped")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := copyFile(context.Background(), link, filepath.Join(dir, "out"), 0o644, 100); err == nil {
+		t.Error("copyFile followed a symlink swapped in for a file")
+	}
+	if _, _, err := hashFile(context.Background(), link, 100); err == nil {
+		t.Error("hashFile followed a symlink")
+	}
+}

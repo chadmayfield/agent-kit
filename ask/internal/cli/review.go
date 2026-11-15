@@ -306,8 +306,17 @@ func reviewOne(ctx context.Context, d Deps, tc config.ToolConfig, p reviewPick, 
 		version = func(string) (string, error) { return "", errors.New("no version check") }
 	}
 
+	// Warnings, such as a failed cleanup that names a file the tool made,
+	// can hold a secret or escape codes, so they get the run's redaction.
+	// This defer runs after the cleanup's and after redactFn is set.
 	var warnings bytes.Buffer
-	defer func() { res.stderr = warnings.String() + res.stderr }()
+	defer func() {
+		w := redactFn(warnings.String())
+		if d.StderrIsTerminal {
+			w = terminalFn(w)
+		}
+		res.stderr = w + res.stderr
+	}()
 	runDir, unverified := dir, false
 	var before map[string]string
 	var extraEnv []string

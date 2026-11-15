@@ -412,7 +412,15 @@ func cleanGitConfig(ctx context.Context, path string) error {
 			fmt.Fprintf(&b, "\t%s = %s\n", e.key, e.value)
 		}
 	}
-	return os.WriteFile(path, []byte(b.String()), fi.Mode().Perm())
+	// The copied file keeps its source mode, which may be read-only:
+	// write with owner access, then put the mode back.
+	if err := os.Chmod(path, 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, fi.Mode().Perm())
 }
 
 // insideLink decides whether the symlink at p, with target link, may be
@@ -458,10 +466,10 @@ func (c ctxReader) Read(p []byte) (int, error) {
 
 // copyFile copies a regular file and returns the bytes written. It fails
 // with errOverBudget once more than budget bytes would be written. The
-// source is opened without blocking and must still be a regular file once
-// open.
+// source is opened without blocking and without following a symlink, and
+// must still be a regular file once open.
 func copyFile(ctx context.Context, src, dst string, perm fs.FileMode, budget int64) (int64, error) {
-	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -554,7 +562,7 @@ func Fingerprint(ctx context.Context, dir string, limits Limits) (map[string]str
 
 // hashFile hashes a regular file of at most budget bytes.
 func hashFile(ctx context.Context, p string, budget int64) (string, int64, error) {
-	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(p, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return "", 0, err
 	}

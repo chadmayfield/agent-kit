@@ -404,6 +404,11 @@ ask review --claude opus --codex example-codex-model --agy example-agy-model \
 Any prompt works, built the same way as for `ask`: the words after the
 flags, `-f` files, and a lone `-` for stdin. Each tool gets the same text.
 
+Pass the files to review with `-f` when agy is one of the tools. In a
+headless run, agy's read-only mode refuses shell commands, so an agy that
+tries to read a file with one gives no answer. With the text attached, it
+does not need to.
+
 | Flag | What it does |
 |---|---|
 | `--claude <model>`, `--codex <model>`, `--agy <model>` | Review with that tool and model. Short names from the tool's `models` map work. A tool without a model from a flag or from `review.models` in the config is left out. At least one is needed. |

@@ -346,6 +346,10 @@ It also takes
 .B \-\-timeout
 and
 .BR \-f .
+Pass the files to review with
+.B \-f
+when agy is one of the tools: its read\-only mode refuses shell commands
+in a headless run, so it cannot read files with them.
 Every tool runs with its read\-only setup and read\-only secrets.
 A tool whose setup is verified runs in the real folder; any other runs in
 a private throwaway copy, and its review fails if the copy changed.
