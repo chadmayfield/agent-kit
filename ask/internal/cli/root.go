@@ -504,12 +504,22 @@ type runStats struct {
 	dryRun bool
 	// guard is why the read-only guard stopped the run, or empty.
 	guard string
+	// final is the final message as shown, after redaction, and report
+	// is the saved report's path; both may be empty.
+	final, report string
 }
 
 // runAsk runs the tool and appends one log entry for the exit, whatever
 // it was. The tool and model are known here; the prompt never goes in the
 // log.
 func runAsk(d Deps, o options, args []string) error {
+	_, err := runAskStats(d, o, args)
+	return err
+}
+
+// runAskStats is runAsk that also returns the run's stats, for callers
+// such as ask review that collect several runs.
+func runAskStats(d Deps, o options, args []string) (runStats, error) {
 	if d.Env == nil {
 		d.Env = os.Getenv
 	}
@@ -519,11 +529,11 @@ func runAsk(d Deps, o options, args []string) error {
 	var st runStats
 	err := runTool(d, o, args, &st)
 	if st.dryRun {
-		return err
+		return st, err
 	}
 	state, serr := stateDir(d.Env)
 	if serr != nil {
-		return err
+		return st, err
 	}
 	now := d.Now
 	entry := record.LogEntry{
@@ -538,7 +548,7 @@ func runAsk(d Deps, o options, args []string) error {
 	if lerr := record.AppendLog(filepath.Join(state, "log.jsonl"), entry); lerr != nil {
 		fmt.Fprintf(d.Stderr, "ask: warning: %v\n", lerr)
 	}
-	return err
+	return st, err
 }
 
 // runTool is the whole run path for one tool. args is tool, model, then
@@ -846,6 +856,7 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 		}
 	}
 
+	st.final, st.report = final, report
 	switch {
 	case finalRE != nil && final != "":
 		line, ok := lastMatch(finalRE, final)
