@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -235,5 +236,146 @@ func TestCopySkipsFifo(t *testing.T) {
 	}
 	if fp["made"] != "other" {
 		t.Errorf("fingerprint[made] = %q, want other", fp["made"])
+	}
+}
+
+func TestCopyStripsGitRemotes(t *testing.T) {
+	src, _ := tree(t)
+	cfg := `[core]
+	repositoryformatversion = 0
+	bare = false
+[remote "origin"]
+	url = git@github.com:example/project.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[branch "main"]
+	remote = origin
+	merge = refs/heads/main
+[url "git@github.com:"]
+	pushInsteadOf = https://github.com/
+[credential]
+	helper = store
+[include]
+	path = ../../shared.gitconfig
+[includeIf "gitdir:~/work/"]
+	path = work.gitconfig
+[Remote "upper"]
+	url = x
+`
+	if err := os.WriteFile(filepath.Join(src, ".git", "config"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir, cleanup, err := Copy(src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	got, err := os.ReadFile(filepath.Join(dir, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, gone := range []string{"remote \"origin\"", "github.com", "pushInsteadOf", "credential", "helper", "include", "shared.gitconfig", "Remote \"upper\""} {
+		if strings.Contains(text, gone) {
+			t.Errorf("copy's git config still has %q:\n%s", gone, text)
+		}
+	}
+	for _, kept := range []string{"[core]", "repositoryformatversion = 0", "[branch \"main\"]", "merge = refs/heads/main"} {
+		if !strings.Contains(text, kept) {
+			t.Errorf("copy's git config lost %q:\n%s", kept, text)
+		}
+	}
+	// The source is untouched.
+	if orig, _ := os.ReadFile(filepath.Join(src, ".git", "config")); string(orig) != cfg {
+		t.Error("the source git config changed")
+	}
+}
+
+func TestCopyDropsGitFile(t *testing.T) {
+	src, _ := tree(t)
+	if err := os.RemoveAll(filepath.Join(src, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	// A worktree or submodule: .git is a file that points at the real
+	// repository's git folder.
+	if err := os.WriteFile(filepath.Join(src, ".git"), []byte("gitdir: /real/repo/.git/worktrees/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir, cleanup, err := Copy(src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if _, err := os.Lstat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
+		t.Errorf("the .git pointer file was copied: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.txt")); err != nil {
+		t.Errorf("other files were not copied: %v", err)
+	}
+}
+
+func TestCopiedRepoCannotPush(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	src := t.TempDir()
+	t.Setenv("TMPDIR", t.TempDir())
+	git := func(dir string, args ...string) (string, error) {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.invalid", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.invalid")
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	for _, args := range [][]string{{"init", "-q", "-b", "main"}, {"remote", "add", "origin", "https://example.invalid/repo.git"}} {
+		if out, err := git(src, args...); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := git(src, "add", "f.txt"); err != nil {
+		t.Fatal(out)
+	}
+	if out, err := git(src, "commit", "-q", "-m", "first"); err != nil {
+		t.Fatal(out)
+	}
+	dir, cleanup, err := Copy(src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if out, err := git(dir, "log", "--oneline"); err != nil || !strings.Contains(out, "first") {
+		t.Errorf("git log in the copy: %v %s", err, out)
+	}
+	if out, _ := git(dir, "remote"); strings.TrimSpace(out) != "" {
+		t.Errorf("the copy still has remotes: %q", out)
+	}
+	if out, err := git(dir, "push"); err == nil {
+		t.Errorf("git push in the copy succeeded: %s", out)
+	}
+	if out, _ := git(src, "remote"); strings.TrimSpace(out) != "origin" {
+		t.Errorf("the source lost its remote: %q", out)
+	}
+}
+
+func TestCopyRejectsLinksThatClimbOutAndBack(t *testing.T) {
+	src, _ := tree(t)
+	// Resolves inside the source by climbing to its parent and coming
+	// back in by name; in the copy the same text would land outside it.
+	back := filepath.Join("..", "..", filepath.Base(src), "a.txt")
+	if err := os.Symlink(back, filepath.Join(src, "sub", "back")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(src, "sub", "back")); err != nil {
+		t.Fatalf("test setup: the link should resolve in the source: %v", err)
+	}
+	dir, cleanup, err := Copy(src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if _, err := os.Lstat(filepath.Join(dir, "sub", "back")); !os.IsNotExist(err) {
+		t.Errorf("a link that climbs above the folder was copied")
 	}
 }

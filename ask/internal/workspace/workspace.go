@@ -29,8 +29,10 @@ type Limits struct {
 // the temp folder. Regular files keep their permission bits, folders keep
 // theirs, and symlinks are copied as links and never followed. A symlink
 // that is absolute, dangling, or resolves outside src is left out, so a
-// tool cannot write through the copy to files outside it. FIFOs, sockets
-// and devices are skipped. Over a limit, Copy removes what it made
+// tool cannot write through the copy to files outside it. A .git file,
+// which points at another repository, is left out, and the copy's git
+// config loses its remotes, URL rewrites, credential helpers and
+// includes. FIFOs, sockets and devices are skipped. Over a limit, Copy removes what it made
 // and returns an error naming the limit.
 func Copy(src string, limits Limits) (dir string, cleanup func(), err error) {
 	root, err := os.MkdirTemp("", "ask-review-")
@@ -71,6 +73,12 @@ func Copy(src string, limits Limits) (dir string, cleanup func(), err error) {
 			return err
 		}
 		target := filepath.Join(dst, rel)
+		// A .git file points at a real repository's git folder (a
+		// worktree or submodule); git commands in the copy would change
+		// that repository, so the pointer stays behind.
+		if d.Name() == ".git" && d.Type().IsRegular() {
+			return nil
+		}
 		if rel != "." {
 			files++
 			if files > limits.MaxFiles {
@@ -93,7 +101,7 @@ func Copy(src string, limits Limits) (dir string, cleanup func(), err error) {
 			if err != nil {
 				return err
 			}
-			if !linkStaysInside(p, link, srcReal) {
+			if !linkStaysInside(p, link, srcReal, filepath.Dir(rel)) {
 				// A tool writing through it would change files outside
 				// the copy, which the fingerprint cannot see.
 				return nil
@@ -113,6 +121,9 @@ func Copy(src string, limits Limits) (dir string, cleanup func(), err error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("copy %s: %w", filepath.Base(src), err)
 	}
+	if err = stripGitConfig(filepath.Join(dst, ".git", "config")); err != nil {
+		return "", nil, fmt.Errorf("copy %s: %w", filepath.Base(src), err)
+	}
 	// Set folder modes deepest first, so a read-only folder does not block
 	// setting the ones inside it.
 	for i := len(dirs) - 1; i >= 0; i-- {
@@ -125,14 +136,75 @@ func Copy(src string, limits Limits) (dir string, cleanup func(), err error) {
 
 var errTooBig = errors.New("over the byte limit")
 
+// gitSectionsDropped are git config sections left out of a copy: remotes
+// and URL rewrites (so a plain git push has nowhere to go), credential
+// helpers, and includes, which could pull in config from outside.
+var gitSectionsDropped = map[string]bool{
+	"remote": true, "url": true, "credential": true, "include": true, "includeif": true,
+}
+
+// stripGitConfig rewrites the git config at path, when it is a regular
+// file, without the sections in gitSectionsDropped. Section names match
+// in any case, in both the [remote "x"] and the older [remote.x] forms.
+func stripGitConfig(path string) error {
+	fi, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) || (err == nil && !fi.Mode().IsRegular()) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var kept []string
+	drop := false
+	for _, line := range strings.SplitAfter(string(data), "\n") {
+		if t := strings.TrimSpace(line); strings.HasPrefix(t, "[") {
+			name := strings.TrimLeft(t, "[")
+			if i := strings.IndexAny(name, " \t\".]"); i >= 0 {
+				name = name[:i]
+			}
+			drop = gitSectionsDropped[strings.ToLower(name)]
+		}
+		if !drop {
+			kept = append(kept, line)
+		}
+	}
+	return os.WriteFile(path, []byte(strings.Join(kept, "")), fi.Mode().Perm())
+}
+
 // linkStaysInside reports whether the symlink at p, with target link, is
-// safe to copy: the target is relative, and the link resolves, through
-// every link on the way, to a path inside srcReal. A relative link that
-// resolves inside the source resolves to the same place inside the copy.
+// safe to copy. relDir is the folder holding the link, relative to the
+// source root. Three checks must all pass:
+//   - the target is relative;
+//   - read as text from relDir, no ".." step ever goes above the root, so
+//     the link cannot leave the folder and come back in by name (in the
+//     copy that climb would land somewhere else);
+//   - resolved through every link on the way, it ends inside srcReal,
+//     which catches a climb through a linked folder.
+//
 // Absolute links, dangling links and links that leave the folder fail.
-func linkStaysInside(p, link, srcReal string) bool {
+func linkStaysInside(p, link, srcReal, relDir string) bool {
 	if filepath.IsAbs(link) {
 		return false
+	}
+	depth := 0
+	if relDir != "." {
+		depth = len(strings.Split(relDir, string(filepath.Separator)))
+	}
+	for _, part := range strings.Split(link, string(filepath.Separator)) {
+		switch part {
+		case "", ".":
+		case "..":
+			depth--
+			if depth < 0 {
+				return false
+			}
+		default:
+			depth++
+		}
 	}
 	resolved, err := filepath.EvalSymlinks(p)
 	if err != nil {
