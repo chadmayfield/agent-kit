@@ -94,8 +94,15 @@ type options struct {
 	verbose  bool
 	files    []string
 	// probeReadOnly skips the read-only gate. Only a readonlyprobe build
-	// declares its flag, so it is always false in the default build.
+	// declares its flag, and ask review sets it for a tool it runs in a
+	// throwaway copy.
 	probeReadOnly bool
+	// extraEnv adds KEY=value pairs to the tool's environment, after the
+	// config's; ask review uses it for git settings in a copy.
+	extraEnv []string
+	// stderrOnFail shows the tool's stderr tail after a failed run, as
+	// --verbose does, without the rest of --verbose; ask review sets it.
+	stderrOnFail bool
 }
 
 // registerProbe, when set by a build-tagged file, declares extra flags.
@@ -117,7 +124,8 @@ each read-only claude run and stops it if claude loads a hook, an MCP
 server or a tool other than Read, Grep and Glob.
 
 ask models lists each tool's models. ask usage shows each tool's rate
-limit windows; add --runs for ask's own run totals.
+limit windows; add --runs for ask's own run totals. ask review sends one
+prompt to claude, codex and agy at once and shows their reviews together.
 
 Tools: %s
 
@@ -504,12 +512,27 @@ type runStats struct {
 	dryRun bool
 	// guard is why the read-only guard stopped the run, or empty.
 	guard string
+	// final is the final message after redaction, and shown is the same
+	// text made safe for a terminal with the run's secrets known. report
+	// is the saved report's path. All may be empty.
+	final, shown, report string
+	// redact and terminal apply the run's secrets once they are known:
+	// redact replaces secret values, and terminal also makes text safe for
+	// a terminal. Both are nil before the secrets are looked up.
+	redact, terminal func(string) string
 }
 
 // runAsk runs the tool and appends one log entry for the exit, whatever
 // it was. The tool and model are known here; the prompt never goes in the
 // log.
 func runAsk(d Deps, o options, args []string) error {
+	_, err := runAskStats(d, o, args)
+	return err
+}
+
+// runAskStats is runAsk that also returns the run's stats, for callers
+// such as ask review that collect several runs.
+func runAskStats(d Deps, o options, args []string) (runStats, error) {
 	if d.Env == nil {
 		d.Env = os.Getenv
 	}
@@ -519,11 +542,11 @@ func runAsk(d Deps, o options, args []string) error {
 	var st runStats
 	err := runTool(d, o, args, &st)
 	if st.dryRun {
-		return err
+		return st, err
 	}
 	state, serr := stateDir(d.Env)
 	if serr != nil {
-		return err
+		return st, err
 	}
 	now := d.Now
 	entry := record.LogEntry{
@@ -538,7 +561,7 @@ func runAsk(d Deps, o options, args []string) error {
 	if lerr := record.AppendLog(filepath.Join(state, "log.jsonl"), entry); lerr != nil {
 		fmt.Fprintf(d.Stderr, "ask: warning: %v\n", lerr)
 	}
-	return err
+	return st, err
 }
 
 // runTool is the whole run path for one tool. args is tool, model, then
@@ -709,10 +732,12 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 		values[s.EnvVar] = v
 		byKey[s.Name] = v
 	}
+	st.redact = func(s string) string { return redact(s, byKey) }
+	st.terminal = func(s string) string { return forTerminal(s, byKey) }
 	if err := pendingSignal(d.Signals); err != nil {
 		return err
 	}
-	childEnviron := childEnv(environ(), tc.PassEnv, values)
+	childEnviron := append(childEnv(environ(), tc.PassEnv, values), o.extraEnv...)
 
 	timeout := o.timeout
 	if timeout == 0 && tc.TimeoutSeconds > 0 {
@@ -820,7 +845,7 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 		code, runErr = ExitTool, errors.New("no final message")
 	}
 
-	if o.verbose && ran && code != ExitOK {
+	if (o.verbose || o.stderrOnFail) && ran && code != ExitOK {
 		showStderr(d.Stderr, d.StderrIsTerminal, tool, out, byKey)
 	}
 
@@ -846,6 +871,7 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 		}
 	}
 
+	st.final, st.shown, st.report = final, forTerminal(final, byKey), report
 	switch {
 	case finalRE != nil && final != "":
 		line, ok := lastMatch(finalRE, final)

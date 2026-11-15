@@ -37,6 +37,18 @@ ask, ask-codex, ask-claude, ask-agy, ask-opencode \- send one prompt to a coding
 .IR YYYY\-MM\-DD ]
 .RB [ \-\-json ]
 .RI [ tool ]
+.br
+.B ask review
+.RB [ \-\-claude
+.IR model ]
+.RB [ \-\-codex
+.IR model ]
+.RB [ \-\-agy
+.IR model ]
+.RB [ \-\-as
+.IR kind ]
+.RI [ options ]
+.RI [ prompt ...]
 .SH DESCRIPTION
 .B ask
 sends one prompt to a coding agent CLI and prints the tool's final message
@@ -313,6 +325,45 @@ opencode shows
 .B \-\-since
 counts only runs on or after that date and implies
 .BR \-\-runs .
+.TP
+\fBask review\fP [\fB\-\-claude\fP \fImodel\fP] [\fB\-\-codex\fP \fImodel\fP] [\fB\-\-agy\fP \fImodel\fP] [\fB\-\-as\fP \fIkind\fP] [\fIoptions\fP] [\fIprompt\fP ...]
+Send one prompt to each picked tool at once and print their answers
+together, then a summary and the path of a combined report.
+Models not given as flags come from
+.B review.models
+in the config.
+.B \-\-as
+puts a preset in front of the prompt:
+.BR adversarial ,
+.BR code ,
+.BR docs ,
+.BR security ,
+or a kind from
+.BR review.presets .
+It also takes
+.BR \-\-json ,
+.BR \-C ,
+.B \-\-timeout
+and
+.BR \-f .
+Pass the files to review with
+.B \-f
+when agy is one of the tools: its read\-only mode refuses shell commands
+in a headless run, so it cannot read files with them.
+Every tool runs with its read\-only setup and read\-only secrets.
+A tool whose setup is verified runs in the real folder; any other runs in
+a private throwaway copy, and its review fails if the copy changed.
+The copy keeps only symlinks that stay inside the folder.
+Its git configs are rebuilt to keep only repository-format settings,
+hooks and git's older remote files are left out, git file names match in
+any case, and git there ignores the global and system git config, so it
+has no configured remotes and runs no configured commands.
+The copy only sees changes made inside it: a tool can still reach the
+network, or write to an absolute path, including the original folder,
+where its own sandbox allows.
+Exit status is 0 when every review succeeded, 1 when any failed, and
+128+n when a signal stopped them all; answers that had finished still
+print.
 .SH EXIT STATUS
 .TP
 .B 0
