@@ -1,6 +1,9 @@
 package workspace
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,7 +60,7 @@ func leftovers(t *testing.T, tmp string) []string {
 
 func TestCopyMatchesSource(t *testing.T) {
 	src, tmp := tree(t)
-	dir, cleanup, err := Copy(src, noLimits)
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,11 +71,11 @@ func TestCopyMatchesSource(t *testing.T) {
 	if fi, err := os.Stat(root); err != nil || fi.Mode().Perm() != 0o700 {
 		t.Errorf("copy root mode %v, %v; want 0700", fi.Mode().Perm(), err)
 	}
-	a, err := Fingerprint(src)
+	a, err := Fingerprint(context.Background(), src, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := Fingerprint(dir)
+	b, err := Fingerprint(context.Background(), dir, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +90,9 @@ func TestCopyMatchesSource(t *testing.T) {
 	if !strings.HasPrefix(b["run.sh"], "file:755:") || !strings.HasPrefix(b["empty"], "dir:750") {
 		t.Errorf("modes not kept: run.sh=%q empty=%q", b["run.sh"], b["empty"])
 	}
-	cleanup()
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
 	if left := leftovers(t, tmp); len(left) != 0 {
 		t.Errorf("cleanup left %v", left)
 	}
@@ -117,11 +122,11 @@ func TestCopyKeepsOnlyInsideLinks(t *testing.T) {
 	must(os.Symlink("../..", filepath.Join(src, "x", "y", "d")))
 	must(os.Symlink("d/../../..", filepath.Join(src, "x", "y", "tricky")))
 
-	dir, cleanup, err := Copy(src, noLimits)
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() { _ = cleanup() }()
 	for rel, want := range map[string]string{"to-a": "a.txt", "sub/up-a": "../a.txt", "to-sub": "sub", "x/y/d": "../.."} {
 		if got, err := os.Readlink(filepath.Join(dir, rel)); err != nil || got != want {
 			t.Errorf("%s = %q, %v; want a link to %q", rel, got, err, want)
@@ -132,7 +137,7 @@ func TestCopyKeepsOnlyInsideLinks(t *testing.T) {
 			t.Errorf("%s was copied; it can reach outside the copy", rel)
 		}
 	}
-	fp, err := Fingerprint(dir)
+	fp, err := Fingerprint(context.Background(), dir, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,11 +156,11 @@ func TestCopyLimits(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "big"), make([]byte, 11), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := Copy(src, Limits{MaxBytes: 10, MaxFiles: 100})
+	_, _, err := Copy(context.Background(), src, Limits{MaxBytes: 10, MaxFiles: 100})
 	if err == nil || !strings.Contains(err.Error(), "10") {
 		t.Errorf("byte limit: err = %v, want one naming 10", err)
 	}
-	_, _, err = Copy(src, Limits{MaxBytes: 1 << 20, MaxFiles: 2})
+	_, _, err = Copy(context.Background(), src, Limits{MaxBytes: 1 << 20, MaxFiles: 2})
 	if err == nil || !strings.Contains(err.Error(), "2") {
 		t.Errorf("file limit: err = %v, want one naming 2", err)
 	}
@@ -166,16 +171,16 @@ func TestCopyLimits(t *testing.T) {
 
 func TestChangedFindsEdits(t *testing.T) {
 	src, _ := tree(t)
-	dir, cleanup, err := Copy(src, noLimits)
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
-	before, err := Fingerprint(dir)
+	defer func() { _ = cleanup() }()
+	before, err := Fingerprint(context.Background(), dir, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	same, _ := Fingerprint(dir)
+	same, _ := Fingerprint(context.Background(), dir, noLimits)
 	if ch := Changed(before, same); len(ch) != 0 {
 		t.Fatalf("no edits, but Changed = %v", ch)
 	}
@@ -189,7 +194,7 @@ func TestChangedFindsEdits(t *testing.T) {
 	must(os.Remove(filepath.Join(dir, "sub/b.go")))
 	must(os.WriteFile(filepath.Join(dir, "new.txt"), []byte("x"), 0o644))
 	must(os.Chmod(filepath.Join(dir, "run.sh"), 0o644))
-	after, err := Fingerprint(dir)
+	after, err := Fingerprint(context.Background(), dir, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,10 +212,10 @@ func TestCopySkipsFifo(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	var dir string
-	var cleanup func()
+	var cleanup func() error
 	go func() {
 		var err error
-		dir, cleanup, err = Copy(src, noLimits)
+		dir, cleanup, err = Copy(context.Background(), src, noLimits)
 		done <- err
 	}()
 	select {
@@ -221,7 +226,7 @@ func TestCopySkipsFifo(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Copy hung on a FIFO")
 	}
-	defer cleanup()
+	defer func() { _ = cleanup() }()
 	if _, err := os.Lstat(filepath.Join(dir, "pipe")); !os.IsNotExist(err) {
 		t.Errorf("the FIFO was copied: %v", err)
 	}
@@ -230,7 +235,7 @@ func TestCopySkipsFifo(t *testing.T) {
 	if err := syscall.Mkfifo(filepath.Join(dir, "made"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fp, err := Fingerprint(dir)
+	fp, err := Fingerprint(context.Background(), dir, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,22 +269,22 @@ func TestCopyStripsGitRemotes(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, ".git", "config"), []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dir, cleanup, err := Copy(src, noLimits)
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() { _ = cleanup() }()
 	got, err := os.ReadFile(filepath.Join(dir, ".git", "config"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(got)
-	for _, gone := range []string{"remote \"origin\"", "github.com", "pushInsteadOf", "credential", "helper", "include", "shared.gitconfig", "Remote \"upper\""} {
+	for _, gone := range []string{"remote \"origin\"", "github.com", "pushInsteadOf", "credential", "helper", "include", "shared.gitconfig", "Remote \"upper\"", "branch", "merge"} {
 		if strings.Contains(text, gone) {
 			t.Errorf("copy's git config still has %q:\n%s", gone, text)
 		}
 	}
-	for _, kept := range []string{"[core]", "repositoryformatversion = 0", "[branch \"main\"]", "merge = refs/heads/main"} {
+	for _, kept := range []string{"[core]", "repositoryformatversion = 0", "bare = false"} {
 		if !strings.Contains(text, kept) {
 			t.Errorf("copy's git config lost %q:\n%s", kept, text)
 		}
@@ -300,11 +305,11 @@ func TestCopyDropsGitFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, ".git"), []byte("gitdir: /real/repo/.git/worktrees/x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dir, cleanup, err := Copy(src, noLimits)
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() { _ = cleanup() }()
 	if _, err := os.Lstat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
 		t.Errorf("the .git pointer file was copied: %v", err)
 	}
@@ -340,11 +345,11 @@ func TestCopiedRepoCannotPush(t *testing.T) {
 	if out, err := git(src, "commit", "-q", "-m", "first"); err != nil {
 		t.Fatal(out)
 	}
-	dir, cleanup, err := Copy(src, noLimits)
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() { _ = cleanup() }()
 	if out, err := git(dir, "log", "--oneline"); err != nil || !strings.Contains(out, "first") {
 		t.Errorf("git log in the copy: %v %s", err, out)
 	}
@@ -370,11 +375,11 @@ func TestCopyRejectsLinksThatClimbOutAndBack(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(src, "sub", "back")); err != nil {
 		t.Fatalf("test setup: the link should resolve in the source: %v", err)
 	}
-	dir, cleanup, err := Copy(src, noLimits)
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() { _ = cleanup() }()
 	// The copy holds the canonical path to the resolved target, never
 	// the climbing text.
 	if got, err := os.Readlink(filepath.Join(dir, "sub", "back")); err != nil || got != "../a.txt" {
@@ -395,11 +400,11 @@ func TestCopyRewritesKeptLinksCanonically(t *testing.T) {
 	// kernel reaches through d, not the text's parent.
 	must(os.Symlink("../..", filepath.Join(src, "p", "q", "d")))
 	must(os.Symlink("d/sub/../a.txt", filepath.Join(src, "p", "q", "via")))
-	dir, cleanup, err := Copy(src, noLimits)
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() { _ = cleanup() }()
 	got, err := os.Readlink(filepath.Join(dir, "p", "q", "via"))
 	if err != nil || got != "../../a.txt" {
 		t.Errorf("p/q/via = %q, %v; want ../../a.txt", got, err)
@@ -436,11 +441,11 @@ func TestCopySanitizesEveryGitFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dir, cleanup, err := Copy(src, noLimits)
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() { _ = cleanup() }()
 	for _, rel := range []string{".git/config", ".git/config.worktree", ".git/modules/lib/config", "vendor/dep/.git/config"} {
 		p := filepath.Join(dir, rel)
 		fi, err := os.Lstat(p)
@@ -508,11 +513,11 @@ func TestCopyHandlesGitFoldersByContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	dir, cleanup, err := Copy(src, noLimits)
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
+	defer func() { _ = cleanup() }()
 	if _, err := os.Lstat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
 		t.Errorf("a .git symlink was copied: %v", err)
 	}
@@ -534,12 +539,272 @@ func TestCopyHandlesGitFoldersByContent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "sub", "config"), []byte("[remote \"x\"]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dir2, cleanup2, err := Copy(src, noLimits)
+	dir2, cleanup2, err := Copy(context.Background(), src, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup2()
+	defer func() { _ = cleanup2() }()
 	if data, _ := os.ReadFile(filepath.Join(dir2, "sub", "config")); string(data) != "[remote \"x\"]\n" {
 		t.Errorf("a non-git config was changed: %q", data)
+	}
+}
+
+func TestGitConfigAllowlist(t *testing.T) {
+	src, _ := tree(t)
+	cfg := "[core] worktree = /real/checkout\n" +
+		"[core]\n\trepositoryformatversion = 1\n\tbare = false\n\tfsmonitor = touch /tmp/x\n\thooksPath = /real/hooks\n\tsshCommand = ssh -i key\n" +
+		"[branch \"main\"] remote = /real/bare.git\n" +
+		"[diff \"x\"]\n\ttextconv = cat\n" +
+		"[filter \"lfs\"]\n\tclean = git-lfs clean\n" +
+		"[alias]\n\tx = !echo \\\n\tmore\n" +
+		"[extensions]\n\tobjectformat = sha256\n\tpartialclone = origin\n"
+	if err := os.WriteFile(filepath.Join(src, ".git", "config"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	got, err := os.ReadFile(filepath.Join(dir, ".git", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, want := range []string{"repositoryformatversion = 1", "bare = false", "[extensions]", "objectformat = sha256"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("config lost %q:\n%s", want, text)
+		}
+	}
+	for _, gone := range []string{"worktree", "fsmonitor", "hooksPath", "sshCommand", "branch", "/real", "textconv", "filter", "lfs", "alias", "echo", "more", "partialclone"} {
+		if strings.Contains(text, gone) {
+			t.Errorf("config kept %q:\n%s", gone, text)
+		}
+	}
+}
+
+func TestCopyLeavesOutGitHooks(t *testing.T) {
+	src, _ := tree(t)
+	hook := filepath.Join(src, ".git", "hooks", "pre-commit")
+	if err := os.MkdirAll(filepath.Dir(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitDirAt(t, src, "fixtures/server.git")
+	if err := os.MkdirAll(filepath.Join(src, "fixtures", "server.git", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	for _, rel := range []string{".git/hooks", "fixtures/server.git/hooks"} {
+		if _, err := os.Lstat(filepath.Join(dir, rel)); !os.IsNotExist(err) {
+			t.Errorf("%s was copied", rel)
+		}
+	}
+}
+
+func TestCopiedRepoIgnoresCommandSettings(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	src := t.TempDir()
+	t.Setenv("TMPDIR", t.TempDir())
+	marker := filepath.Join(t.TempDir(), "ran")
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	git := func(dir string, args ...string) (string, error) {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1",
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.invalid", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.invalid")
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	if out, err := git(filepath.Dir(bare), "init", "-q", "--bare", bare); err != nil {
+		t.Fatal(out)
+	}
+	if out, err := git(src, "init", "-q", "-b", "main"); err != nil {
+		t.Fatal(out)
+	}
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "f.txt"}, {"commit", "-q", "-m", "one"}} {
+		if out, err := git(src, args...); err != nil {
+			t.Fatal(out)
+		}
+	}
+	f, err := os.OpenFile(filepath.Join(src, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintf(f, "[core] worktree = %s\n[core]\n\tfsmonitor = touch %s; false\n[branch \"main\"]\n\tremote = %s\n", t.TempDir(), marker, bare)
+	f.Close()
+
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	if out, err := git(dir, "status", "--short"); err != nil {
+		t.Errorf("git status in the copy: %v %s", err, out)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("core.fsmonitor ran a command from the copy")
+	}
+	if out, _ := git(dir, "config", "core.worktree"); strings.TrimSpace(out) != "" {
+		t.Errorf("core.worktree survived: %q", out)
+	}
+	_, _ = git(dir, "push")
+	if out, _ := git(filepath.Dir(bare), "--git-dir", bare, "branch"); strings.TrimSpace(out) != "" {
+		t.Errorf("git push from the copy reached the bare repo: %q", out)
+	}
+}
+
+func TestCopyFollowsSymlinkedRoot(t *testing.T) {
+	src, _ := tree(t)
+	link := filepath.Join(t.TempDir(), "proj")
+	if err := os.Symlink(src, link); err != nil {
+		t.Fatal(err)
+	}
+	dir, cleanup, err := Copy(context.Background(), link, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	fi, err := os.Lstat(dir)
+	if err != nil || !fi.IsDir() {
+		t.Fatalf("copy root is not a folder: %v %v", fi, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "sub", "b.go")); err != nil || string(data) != "package b\n" {
+		t.Errorf("sub/b.go in the copy: %q, %v", data, err)
+	}
+}
+
+func TestCopyAndFingerprintStopOnCancel(t *testing.T) {
+	src, tmp := tree(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := Copy(ctx, src, noLimits); !errors.Is(err, context.Canceled) {
+		t.Errorf("Copy after cancel: %v, want context.Canceled", err)
+	}
+	if left := leftovers(t, tmp); len(left) != 0 {
+		t.Errorf("a cancelled copy left %v", left)
+	}
+	if _, err := Fingerprint(ctx, src, noLimits); !errors.Is(err, context.Canceled) {
+		t.Errorf("Fingerprint after cancel: %v, want context.Canceled", err)
+	}
+}
+
+func TestFingerprintLimits(t *testing.T) {
+	src, _ := tree(t)
+	if err := os.WriteFile(filepath.Join(src, "big"), make([]byte, 11), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Fingerprint(context.Background(), src, Limits{MaxBytes: 10, MaxFiles: 100}); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("byte limit: %v, want ErrTooLarge", err)
+	}
+	if _, err := Fingerprint(context.Background(), src, Limits{MaxBytes: 1 << 20, MaxFiles: 2}); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("file limit: %v, want ErrTooLarge", err)
+	}
+	if _, _, err := Copy(context.Background(), src, Limits{MaxBytes: 10, MaxFiles: 100}); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("Copy over the limit: %v, want ErrTooLarge", err)
+	}
+}
+
+func TestCleanupRemovesReadOnlyFolders(t *testing.T) {
+	src, tmp := tree(t)
+	locked := filepath.Join(src, "locked")
+	if err := os.MkdirAll(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "file"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+	_, cleanup, err := Copy(context.Background(), src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanup(); err != nil {
+		t.Errorf("cleanup: %v", err)
+	}
+	if left := leftovers(t, tmp); len(left) != 0 {
+		t.Errorf("cleanup left %v", left)
+	}
+}
+
+func TestGitNamesMatchInAnyCase(t *testing.T) {
+	src, _ := tree(t)
+	if err := os.RemoveAll(filepath.Join(src, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	// A folder named .GIT holding a config, and a pointer file .Git in a
+	// subfolder.
+	gitDirAt(t, src, ".GIT")
+	if err := os.WriteFile(filepath.Join(src, "sub", ".Git"), []byte("gitdir: /real/repo/.git\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	if data, _ := os.ReadFile(filepath.Join(dir, ".GIT", "config")); strings.Contains(string(data), "remote") {
+		t.Errorf(".GIT/config kept its remote:\n%s", data)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "sub", ".Git")); !os.IsNotExist(err) {
+		t.Errorf("the .Git pointer file was copied")
+	}
+}
+
+func TestGitFolderWithCommondirIsCleaned(t *testing.T) {
+	src, _ := tree(t)
+	wt := filepath.Join(src, "wt")
+	if err := os.MkdirAll(wt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string]string{"HEAD": "ref: refs/heads/x\n", "commondir": "/real/repo/.git\n", "config": "[remote \"o\"]\n\turl = x\n"} {
+		if err := os.WriteFile(filepath.Join(wt, name), []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	if _, err := os.Lstat(filepath.Join(dir, "wt", "commondir")); !os.IsNotExist(err) {
+		t.Error("commondir in a HEAD+commondir folder was copied")
+	}
+	if data, _ := os.ReadFile(filepath.Join(dir, "wt", "config")); strings.Contains(string(data), "remote") {
+		t.Errorf("wt/config kept its remote:\n%s", data)
+	}
+}
+
+func TestCopyErrorsUseRelativePaths(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read any file")
+	}
+	src, _ := tree(t)
+	secret := filepath.Join(src, "sub", "private.txt")
+	if err := os.WriteFile(secret, []byte("x"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := Copy(context.Background(), src, noLimits)
+	if err == nil {
+		t.Fatal("copying an unreadable file worked")
+	}
+	if errors.Is(err, ErrTooLarge) {
+		t.Errorf("an I/O error reads as ErrTooLarge: %v", err)
+	}
+	if strings.Contains(err.Error(), src) || !strings.Contains(err.Error(), filepath.Join("sub", "private.txt")) {
+		t.Errorf("error %q should name sub/private.txt without the absolute path", err)
 	}
 }

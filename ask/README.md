@@ -441,19 +441,28 @@ What goes into the copy:
 - A symlink is kept only if it is relative and resolves inside the folder.
   It is written as the plain relative path to its target. Absolute,
   dangling and outward links are left out.
-- `.git` is copied, so a reviewer can read history and diffs. Every git
-  folder, found by its name or by holding `HEAD`, `objects/` and `refs/`
-  (a bare repository, say), has each config lose its remotes, URL
-  rewrites, credential helpers, includes and `core.worktree`, so a plain
-  `git push` has nowhere to go. `commondir`, `gitdir`,
-  `objects/info/alternates`, a `.git` file or symlink that points
-  elsewhere, and any symlink inside a git folder are left out.
-- A folder over 512 MiB or 50,000 entries is refused for that tool.
+- `.git` is copied, so a reviewer can read history and diffs. A git
+  folder is found by the name `.git` in any case, or by holding `HEAD`
+  together with `objects`, `refs` or `commondir` (a bare repository or a
+  worktree's git folder, say). In each one, every `config` and
+  `config.worktree` is rebuilt to keep only the settings that describe how
+  the repository is stored (`core.repositoryformatversion`, `core.bare`,
+  `extensions.objectformat` and a few more). Remotes, branch remotes, URL
+  rewrites, credential helpers, includes, `core.worktree`, hooks paths,
+  fsmonitor, diff and filter commands are all gone, so git in the copy has
+  no remote to push to and runs no configured commands. The `hooks`
+  folder, `commondir`, `gitdir`, `objects/info/alternates`, a `.git` file
+  or symlink, and any symlink inside a git folder are left out.
+- Git in the copy runs with `GIT_CEILING_DIRECTORIES` set to the copy's
+  temp folder, so it cannot find a repository above it.
+- A folder over 512 MiB or 50,000 entries is refused for that tool with
+  exit 2. Other copy failures, such as an unreadable file, fail that tool
+  with exit 3. Messages name paths relative to the folder.
 
-The copy protects the folder under review, not the rest of the machine. A
-tool still has network access, and could push to an explicit URL with your
-SSH keys or write to an absolute path if its own sandbox allows it. Only a
-verified read-only setup closes that.
+The copy only sees changes made inside it. A tool still has network
+access, and where its own sandbox allows, it could push to an explicit
+URL with your SSH keys or write to an absolute path, including a path in
+the original folder. Only a verified read-only setup closes that.
 
 ### Output
 
@@ -470,7 +479,10 @@ report whose path ends the output.
 Exit codes: 0 when every review succeeded, 1 when any failed (the others
 still print), 2 for bad arguments, 3 when `ask`'s own setup fails before
 any tool starts, and 128+n when a signal stops the review. A signal stops
-every tool.
+every tool, including a copy or fingerprint in progress; answers that had
+already finished still print and go into the combined report. Warnings
+from a tool's run, such as a log file that could not be written, print on
+stderr with the tool's name in front.
 
 ## Flags
 

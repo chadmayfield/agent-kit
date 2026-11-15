@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,6 +55,11 @@ type reviewResult struct {
 	InputTokens  int      `json:"input_tokens"`
 	OutputTokens int      `json:"output_tokens"`
 	ChangedFiles []string `json:"changed_files,omitempty"`
+
+	// shown is Final made safe for a terminal with the run's secrets
+	// known, and stderr holds the run's warnings.
+	shown  string
+	stderr string
 }
 
 // addReviewCommand adds `ask review` to root.
@@ -148,7 +154,10 @@ func runReview(d Deps, ro reviewOptions, tools, words []string) error {
 		return setupErr("%v", err)
 	}
 
-	// Pass each signal to every tool, and remember the first one.
+	// Pass each signal to every tool, and remember the first one. ctx is
+	// cancelled with it, which stops copying and fingerprinting.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	var once sync.Once
@@ -164,7 +173,7 @@ func runReview(d Deps, ro reviewOptions, tools, words []string) error {
 				if !ok {
 					return
 				}
-				once.Do(func() { firstSig = s; close(stop) })
+				once.Do(func() { firstSig = s; close(stop); cancel() })
 				for _, ch := range chans {
 					select {
 					case ch <- s:
@@ -183,18 +192,26 @@ func runReview(d Deps, ro reviewOptions, tools, words []string) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results[i] = reviewOne(d, cfg.Tools[p.Tool], p, dir, text, ro.timeout, chans[i], stop)
+			results[i] = reviewOne(ctx, d, cfg.Tools[p.Tool], p, dir, text, ro.timeout, chans[i], stop)
 		}()
 	}
 	wg.Wait()
 	close(done)
 
-	select {
-	case <-stop:
-		return signalExit(firstSig)
-	default:
+	for _, r := range results {
+		for _, line := range strings.Split(strings.TrimSpace(r.stderr), "\n") {
+			if line == "" {
+				continue
+			}
+			if d.StderrIsTerminal {
+				line = forTerminal(line, nil)
+			}
+			fmt.Fprintf(d.Stderr, "%s: %s\n", r.Tool, line)
+		}
 	}
 
+	// After a signal, still show and save what finished, then exit with
+	// the signal's code.
 	if ro.asJSON {
 		report := saveReviewReport(d, state, renderReview(results, false))
 		enc := json.NewEncoder(d.Stdout)
@@ -214,6 +231,11 @@ func runReview(d Deps, ro reviewOptions, tools, words []string) error {
 		}
 	}
 
+	select {
+	case <-stop:
+		return signalExit(firstSig)
+	default:
+	}
 	failed := 0
 	for _, r := range results {
 		if r.Exit != 0 {
@@ -256,7 +278,7 @@ func reviewPrompt(d Deps, words, files []string) (string, error) {
 
 // reviewOne runs one tool and returns its result. It never returns an
 // error: failures are recorded in the result.
-func reviewOne(d Deps, tc config.ToolConfig, p reviewPick, dir, text string, timeout time.Duration, signals chan os.Signal, stop <-chan struct{}) reviewResult {
+func reviewOne(ctx context.Context, d Deps, tc config.ToolConfig, p reviewPick, dir, text string, timeout time.Duration, signals chan os.Signal, stop <-chan struct{}) reviewResult {
 	res := reviewResult{Tool: p.Tool, Model: p.Model, ModelID: adapter.ResolveModel(p.Model, tc), Mode: "read-only"}
 	fail := func(err error) reviewResult {
 		res.Exit, res.Error = exitCode(err), err.Error()
@@ -277,19 +299,36 @@ func reviewOne(d Deps, tc config.ToolConfig, p reviewPick, dir, text string, tim
 		version = func(string) (string, error) { return "", errors.New("no version check") }
 	}
 
+	var warnings bytes.Buffer
+	defer func() { res.stderr = warnings.String() + res.stderr }()
 	runDir, unverified := dir, false
 	var before map[string]string
+	var extraEnv []string
 	if checkReadOnly(a, p.Tool, bin, version) != nil {
 		res.Mode = "copy"
-		copyDir, cleanup, err := workspace.Copy(dir, reviewCopyLimits)
+		copyDir, cleanup, err := workspace.Copy(ctx, dir, reviewCopyLimits)
 		if err != nil {
-			return fail(adapter.Refuse("%s: %v", p.Tool, err))
+			if errors.Is(err, workspace.ErrTooLarge) {
+				return fail(adapter.Refuse("%v", err))
+			}
+			return fail(setupErr("%v", err))
 		}
-		defer cleanup()
-		if before, err = workspace.Fingerprint(copyDir); err != nil {
+		defer func() {
+			if err := cleanup(); err != nil {
+				fmt.Fprintf(&warnings, "ask: warning: %v\n", err)
+			}
+		}()
+		if before, err = workspace.Fingerprint(ctx, copyDir, reviewCopyLimits); err != nil {
 			return fail(setupErr("%v", err))
 		}
 		runDir, unverified = copyDir, true
+		// Git in the copy must not find a repository above it. The real
+		// path matches what the tool sees as its working folder.
+		ceiling := filepath.Dir(copyDir)
+		if real, err := filepath.EvalSymlinks(ceiling); err == nil {
+			ceiling = real
+		}
+		extraEnv = []string{"GIT_CEILING_DIRECTORIES=" + ceiling}
 	}
 
 	var out, errb bytes.Buffer
@@ -303,9 +342,11 @@ func reviewOne(d Deps, tc config.ToolConfig, p reviewPick, dir, text string, tim
 	// setup and its read-only secrets, never --write: in the copy, the
 	// fingerprint catches the setup failing, and nothing gets the wider
 	// write-mode access.
-	o := options{dir: runDir, timeout: timeout, probeReadOnly: unverified}
+	o := options{dir: runDir, timeout: timeout, probeReadOnly: unverified, extraEnv: extraEnv}
 	st, runErr := runAskStats(dd, o, []string{p.Tool, p.Model, "-"})
 	res.Final = strings.TrimRight(st.final, "\n")
+	res.shown = strings.TrimRight(st.shown, "\n")
+	res.stderr = errb.String()
 	res.Report = st.report
 	res.DurationMS = st.duration.Milliseconds()
 	res.InputTokens, res.OutputTokens = st.inTok, st.outTok
@@ -314,7 +355,7 @@ func reviewOne(d Deps, tc config.ToolConfig, p reviewPick, dir, text string, tim
 	}
 
 	if before != nil {
-		after, err := workspace.Fingerprint(runDir)
+		after, err := workspace.Fingerprint(ctx, runDir, reviewCopyLimits)
 		if err != nil {
 			res.Exit, res.Error = ExitTool, err.Error()
 			return res
@@ -355,9 +396,13 @@ func renderReview(results []reviewResult, term bool) string {
 	var b strings.Builder
 	for _, r := range results {
 		fmt.Fprintf(&b, "== %s · %s ==\n", r.Tool, clean(r.Model))
+		final := r.Final
+		if term {
+			final = r.shown
+		}
 		switch {
-		case r.Final != "":
-			b.WriteString(clean(r.Final))
+		case final != "":
+			b.WriteString(final)
 			b.WriteString("\n")
 		default:
 			b.WriteString("(no answer)\n")

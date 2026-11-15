@@ -349,12 +349,16 @@ and
 Every tool runs with its read\-only setup and read\-only secrets.
 A tool whose setup is verified runs in the real folder; any other runs in
 a private throwaway copy, and its review fails if the copy changed.
-The copy keeps only symlinks that stay inside the folder, and its git
-configs lose remotes, URL rewrites, credential helpers, includes and
-.BR core.worktree .
-It protects the folder, not the network or absolute paths.
+The copy keeps only symlinks that stay inside the folder.
+Its git configs are rebuilt to keep only repository-format settings, so
+git there has no remotes and runs no configured commands; hooks are left
+out.
+The copy only sees changes made inside it: a tool can still reach the
+network, or write to an absolute path, including the original folder,
+where its own sandbox allows.
 Exit status is 0 when every review succeeded, 1 when any failed, and
-128+n when a signal stopped them all.
+128+n when a signal stopped them all; answers that had finished still
+print.
 .SH EXIT STATUS
 .TP
 .B 0

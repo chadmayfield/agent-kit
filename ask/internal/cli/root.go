@@ -94,8 +94,12 @@ type options struct {
 	verbose  bool
 	files    []string
 	// probeReadOnly skips the read-only gate. Only a readonlyprobe build
-	// declares its flag, so it is always false in the default build.
+	// declares its flag, and ask review sets it for a tool it runs in a
+	// throwaway copy.
 	probeReadOnly bool
+	// extraEnv adds KEY=value pairs to the tool's environment, after the
+	// config's; ask review uses it for GIT_CEILING_DIRECTORIES.
+	extraEnv []string
 }
 
 // registerProbe, when set by a build-tagged file, declares extra flags.
@@ -505,9 +509,10 @@ type runStats struct {
 	dryRun bool
 	// guard is why the read-only guard stopped the run, or empty.
 	guard string
-	// final is the final message as shown, after redaction, and report
-	// is the saved report's path; both may be empty.
-	final, report string
+	// final is the final message after redaction, and shown is the same
+	// text made safe for a terminal with the run's secrets known. report
+	// is the saved report's path. All may be empty.
+	final, shown, report string
 }
 
 // runAsk runs the tool and appends one log entry for the exit, whatever
@@ -723,7 +728,7 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 	if err := pendingSignal(d.Signals); err != nil {
 		return err
 	}
-	childEnviron := childEnv(environ(), tc.PassEnv, values)
+	childEnviron := append(childEnv(environ(), tc.PassEnv, values), o.extraEnv...)
 
 	timeout := o.timeout
 	if timeout == 0 && tc.TimeoutSeconds > 0 {
@@ -857,7 +862,7 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 		}
 	}
 
-	st.final, st.report = final, report
+	st.final, st.shown, st.report = final, forTerminal(final, byKey), report
 	switch {
 	case finalRE != nil && final != "":
 		line, ok := lastMatch(finalRE, final)

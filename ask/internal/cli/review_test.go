@@ -263,3 +263,135 @@ func TestReviewCopyUsesReadOnlySetup(t *testing.T) {
 		t.Errorf("summary does not say it ran in a copy:\n%s", f.out.String())
 	}
 }
+
+func TestReviewRedactsSplitSecret(t *testing.T) {
+	const value = "example-secret-value"
+	f, project := newReview(t, map[string]string{
+		"claude": `/bin/cat >/dev/null; printf 'RESULT: key example-sec\033[0mret-value\n'`,
+	})
+	writeConfig(t, fmt.Sprintf(`{"tools": {"claude": {"binary": %q,
+	  "secrets": [{"name": "ro_key", "env_var": "EXAMPLE_RO_TOKEN", "ref": "file:%s/ro-secret"}],
+	  "read_only_secrets": ["ro_key"]}}}`, filepath.Join(f.home, "bin", "fake-claude"), f.home))
+	writeSecrets(t, f.home, value)
+	f.d.StdoutIsTerminal = true
+	if code := run(t, f.d, "review", "-C", project, "--claude", "opus", "hi"); code != 0 {
+		t.Fatalf("exit %d; stderr %q", code, f.err.String())
+	}
+	if got := f.out.String(); strings.Contains(got, value) || !strings.Contains(got, "RESULT: key <redacted:ro_key>") {
+		t.Errorf("stdout %q, want the secret redacted", got)
+	}
+}
+
+func TestReviewSymlinkedFolder(t *testing.T) {
+	f, project := newReview(t, map[string]string{
+		"codex": "/bin/cat >/dev/null; /bin/ls",
+	})
+	link := filepath.Join(f.home, "link-to-project")
+	if err := os.Symlink(project, link); err != nil {
+		t.Fatal(err)
+	}
+	if code := run(t, f.d, "review", "-C", link, "--codex", "sol", "hi"); code != 0 {
+		t.Fatalf("exit %d; stdout %q stderr %q", code, f.out.String(), f.err.String())
+	}
+	if !strings.Contains(f.out.String(), "main.go") {
+		t.Errorf("the copy of a symlinked folder lacks its files:\n%s", f.out.String())
+	}
+}
+
+func TestReviewSignalKeepsFinished(t *testing.T) {
+	f, project := newReview(t, map[string]string{
+		"claude": "/bin/cat >/dev/null; echo answer-claude",
+		"codex":  "/bin/cat >/dev/null; /bin/sleep 30; echo late",
+	})
+	sig := make(chan os.Signal, 1)
+	f.d.Signals = sig
+	go func() {
+		time.Sleep(700 * time.Millisecond)
+		sig <- syscall.SIGINT
+	}()
+	code := run(t, f.d, "review", "-C", project, "--claude", "opus", "--codex", "sol", "hi")
+	if code != exitSignalBase+sigintNumber {
+		t.Fatalf("exit %d, want %d", code, exitSignalBase+sigintNumber)
+	}
+	out := f.out.String()
+	if !strings.Contains(out, "answer-claude") || strings.Contains(out, "late") {
+		t.Errorf("want claude's finished answer and no late codex answer:\n%s", out)
+	}
+	if !strings.Contains(out, "report:") {
+		t.Errorf("no combined report after the signal:\n%s", out)
+	}
+}
+
+func TestReviewCopyErrorExitCodes(t *testing.T) {
+	f, project := newReview(t, map[string]string{"codex": "/bin/cat >/dev/null; echo ok"})
+	old := reviewCopyLimits
+	t.Cleanup(func() { reviewCopyLimits = old })
+
+	reviewCopyLimits.MaxFiles = 0
+	if code := run(t, f.d, "review", "--json", "-C", project, "--codex", "sol", "hi"); code != 1 {
+		t.Fatalf("too large: exit %d", code)
+	}
+	var res struct {
+		Reviews []reviewResult `json:"reviews"`
+	}
+	if err := json.Unmarshal(f.out.Bytes(), &res); err != nil {
+		t.Fatal(err)
+	}
+	if r := res.Reviews[0]; r.Exit != ExitUsage || strings.Contains(r.Error, project) {
+		t.Errorf("too large: %+v; want exit 2 without the absolute path", r)
+	}
+
+	reviewCopyLimits = old
+	if os.Geteuid() != 0 {
+		locked := filepath.Join(project, "private.txt")
+		if err := os.WriteFile(locked, []byte("x"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		f.out.Reset()
+		if code := run(t, f.d, "review", "--json", "-C", project, "--codex", "sol", "hi"); code != 1 {
+			t.Fatalf("unreadable file: exit %d", code)
+		}
+		if err := json.Unmarshal(f.out.Bytes(), &res); err != nil {
+			t.Fatal(err)
+		}
+		if r := res.Reviews[0]; r.Exit != ExitSetup || strings.Contains(r.Error, project) || !strings.Contains(r.Error, "private.txt") {
+			t.Errorf("unreadable file: %+v; want exit 3 naming private.txt without the absolute path", r)
+		}
+	}
+}
+
+func TestReviewShowsToolWarnings(t *testing.T) {
+	f, project := newReview(t, map[string]string{"claude": "/bin/cat >/dev/null; echo ok"})
+	// A folder where the log file should be makes the log append fail,
+	// which the run reports as a warning on its stderr.
+	logPath := filepath.Join(os.Getenv("XDG_STATE_HOME"), "ask", "log.jsonl")
+	if err := os.MkdirAll(logPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if code := run(t, f.d, "review", "-C", project, "--claude", "opus", "hi"); code != 0 {
+		t.Fatalf("exit %d; stderr %q", code, f.err.String())
+	}
+	if !strings.Contains(f.err.String(), "claude: ask: warning: log") {
+		t.Errorf("the tool's warning was not shown: stderr %q", f.err.String())
+	}
+}
+
+func TestReviewCopySetsGitCeiling(t *testing.T) {
+	f, project := newReview(t, map[string]string{
+		"codex": `/bin/cat >/dev/null; echo "ceiling=$GIT_CEILING_DIRECTORIES pwd=$(pwd)"`,
+	})
+	if code := run(t, f.d, "review", "-C", project, "--codex", "sol", "hi"); code != 0 {
+		t.Fatalf("exit %d; stderr %q", code, f.err.String())
+	}
+	out := f.out.String()
+	i := strings.Index(out, "ceiling=")
+	if i < 0 {
+		t.Fatalf("no output:\n%s", out)
+	}
+	fields := strings.Fields(out[i:])
+	ceiling := strings.TrimPrefix(fields[0], "ceiling=")
+	pwd := strings.TrimPrefix(fields[1], "pwd=")
+	if ceiling == "" || filepath.Dir(pwd) != ceiling {
+		t.Errorf("GIT_CEILING_DIRECTORIES = %q, want the copy's parent of %q", ceiling, pwd)
+	}
+}
