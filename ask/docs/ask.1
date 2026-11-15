@@ -350,9 +350,10 @@ Every tool runs with its read\-only setup and read\-only secrets.
 A tool whose setup is verified runs in the real folder; any other runs in
 a private throwaway copy, and its review fails if the copy changed.
 The copy keeps only symlinks that stay inside the folder.
-Its git configs are rebuilt to keep only repository-format settings, so
-git there has no remotes and runs no configured commands; hooks are left
-out.
+Its git configs are rebuilt to keep only repository-format settings,
+hooks and git's older remote files are left out, git file names match in
+any case, and git there ignores the global and system git config, so it
+has no configured remotes and runs no configured commands.
 The copy only sees changes made inside it: a tool can still reach the
 network, or write to an absolute path, including the original folder,
 where its own sandbox allows.

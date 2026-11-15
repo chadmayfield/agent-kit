@@ -808,3 +808,117 @@ func TestCopyErrorsUseRelativePaths(t *testing.T) {
 		t.Errorf("error %q should name sub/private.txt without the absolute path", err)
 	}
 }
+
+func TestCaseVariantGitNames(t *testing.T) {
+	src, _ := tree(t)
+	write := func(rel, data string, mode os.FileMode) {
+		t.Helper()
+		p := filepath.Join(src, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(data), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".git/Config", "[core]\n\tbare = false\n\tfsmonitor = touch /tmp/x\n[remote \"o\"]\n\turl = /outside\n", 0o644)
+	write(".git/HOOKS/pre-commit", "#!/bin/sh\n", 0o755)
+	write(".git/COMMONDIR", "/outside/.git\n", 0o644)
+	write(".git/objects/INFO/Alternates", "/outside/.git/objects\n", 0o644)
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	data, err := os.ReadFile(filepath.Join(dir, ".git", "Config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "fsmonitor") || strings.Contains(string(data), "outside") {
+		t.Errorf(".git/Config was not cleaned:\n%s", data)
+	}
+	for _, rel := range []string{".git/HOOKS", ".git/COMMONDIR", ".git/objects/INFO/Alternates"} {
+		if _, err := os.Lstat(filepath.Join(dir, rel)); !os.IsNotExist(err) {
+			t.Errorf("%s was copied", rel)
+		}
+	}
+}
+
+func TestLegacyRemoteFilesLeftOut(t *testing.T) {
+	src, _ := tree(t)
+	write := func(rel, data string) {
+		t.Helper()
+		p := filepath.Join(src, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".git/remotes/origin", "URL: /outside.git\nPush: refs/heads/main:refs/heads/x\n")
+	write(".git/Branches/origin", "/outside.git#x\n")
+	// Remote-tracking refs are ordinary repository data and stay.
+	write(".git/refs/remotes/origin/main", "0000000000000000000000000000000000000000\n")
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	for _, rel := range []string{".git/remotes", ".git/Branches"} {
+		if _, err := os.Lstat(filepath.Join(dir, rel)); !os.IsNotExist(err) {
+			t.Errorf("%s was copied", rel)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git", "refs", "remotes", "origin", "main")); err != nil {
+		t.Errorf("refs/remotes was left out: %v", err)
+	}
+}
+
+func TestFingerprintSeesRootMode(t *testing.T) {
+	src, _ := tree(t)
+	before, err := Fingerprint(context.Background(), src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(src, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	after, err := Fingerprint(context.Background(), src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch := Changed(before, after); len(ch) != 1 || ch[0] != "." {
+		t.Errorf("Changed = %v, want [.] for a root mode change", ch)
+	}
+}
+
+func TestCleanGitConfigLongContinuation(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config")
+	var b strings.Builder
+	b.WriteString("[core]\n\tbare = false\n[alias]\n\tx = x\\\n")
+	for range 200000 {
+		b.WriteString("x\\\n")
+	}
+	b.WriteString("x\n[extensions]\n\tobjectformat = sha1\n")
+	if err := os.WriteFile(p, []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := cleanGitConfig(context.Background(), p); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("cleaning took %v", took)
+	}
+	got, _ := os.ReadFile(p)
+	if !strings.Contains(string(got), "bare = false") || !strings.Contains(string(got), "objectformat = sha1") || strings.Contains(string(got), "alias") {
+		t.Errorf("cleaned config:\n%s", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := cleanGitConfig(ctx, p); !errors.Is(err, context.Canceled) {
+		t.Errorf("cancelled clean: %v", err)
+	}
+}

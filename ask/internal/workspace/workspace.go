@@ -97,8 +97,11 @@ func Copy(ctx context.Context, src string, limits Limits) (dir string, cleanup f
 		if isDotGit(d.Name()) && !d.IsDir() {
 			return nil
 		}
-		// Hooks run on git commands; a reviewer has no use for them.
-		if d.IsDir() && d.Name() == "hooks" && inGitFolder(srcReal, p) {
+		// Hooks run on git commands, and remotes and branches are git's
+		// older files for push destinations; a reviewer needs none of
+		// them. Names match in any case, as git finds them on a
+		// case-insensitive file system.
+		if d.IsDir() && gitDropDirs[strings.ToLower(d.Name())] && isGitDir(filepath.Dir(p)) {
 			return fs.SkipDir
 		}
 		if rel != "." {
@@ -208,8 +211,20 @@ func isDotGit(name string) bool {
 	return strings.EqualFold(name, ".git")
 }
 
+// gitDropDirs are folders left out when they sit directly in a git
+// folder: hooks, and the legacy push destinations remotes and branches.
+// refs/remotes is deeper and stays.
+var gitDropDirs = map[string]bool{"hooks": true, "remotes": true, "branches": true}
+
+// isGitDir reports whether dir itself is a git folder: named .git in any
+// case, or holding git's files.
+func isGitDir(dir string) bool {
+	return isDotGit(filepath.Base(dir)) || looksLikeGitDir(dir)
+}
+
 // gitPointerFiles name files inside a git folder that point git at
-// another repository or checkout; they are removed from a copy.
+// another repository or checkout; they are removed from a copy. Names are
+// matched in lower case.
 var gitPointerFiles = map[string]bool{"commondir": true, "gitdir": true}
 
 // cleanGit cleans every git folder in the copy at dst, at any depth:
@@ -239,9 +254,11 @@ func cleanGit(ctx context.Context, dst string) error {
 		if d.IsDir() || !inGitFolder(dst, p) {
 			return nil
 		}
-		name := d.Name()
+		// Git reaches these names in any case on a case-insensitive file
+		// system, so they are matched in lower case.
+		name := strings.ToLower(d.Name())
 		switch {
-		case gitPointerFiles[name], strings.HasSuffix(filepath.ToSlash(rel), "objects/info/alternates"):
+		case gitPointerFiles[name], strings.HasSuffix(strings.ToLower(filepath.ToSlash(rel)), "objects/info/alternates"):
 			actions = append(actions, action{p, rel, true})
 		case name == "config" || name == "config.worktree":
 			// Copy leaves out every symlink inside a git folder, so this
@@ -260,7 +277,7 @@ func cleanGit(ctx context.Context, dst string) error {
 		if a.remove {
 			err = os.Remove(a.path)
 		} else {
-			err = cleanGitConfig(a.path)
+			err = cleanGitConfig(ctx, a.path)
 		}
 		if err != nil {
 			return pathErr(a.rel, err)
@@ -280,7 +297,7 @@ func inGitFolder(root, p string) bool {
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return false
 		}
-		if isDotGit(filepath.Base(dir)) || looksLikeGitDir(dir) {
+		if isGitDir(dir) {
 			return true
 		}
 		if rel == "." {
@@ -319,13 +336,14 @@ var gitAllowed = map[string]map[string]bool{
 // gitPlainValue is the only value shape kept: a word, number or boolean.
 var gitPlainValue = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
-// cleanGitConfig rebuilds the git config at path from gitAllowed: every
+// cleanGitConfig rebuilds the git config at path from gitAllowed. It stops
+// when ctx is done: every
 // other section, key, include and continuation line is dropped, so no
 // setting can point git at another path or URL, or make it run a command.
 // It reads "[section] key = value" on one line, subsections, comments and
 // backslash continuations the way git does, and keeps a key only when its
 // section has no subsection and its value is plain.
-func cleanGitConfig(path string) error {
+func cleanGitConfig(ctx context.Context, path string) error {
 	fi, err := os.Lstat(path)
 	if err != nil {
 		return err
@@ -337,15 +355,24 @@ func cleanGitConfig(path string) error {
 	type kv struct{ key, value string }
 	kept := map[string][]kv{}
 	section := ""
-	lines := strings.Split(string(data), "\n")
-	for i := 0; i < len(lines); i++ {
-		line := lines[i]
-		// Join continuation lines; a continued value is never kept.
-		continued := false
-		for strings.HasSuffix(strings.TrimRight(line, " \t\r"), `\`) && i+1 < len(lines) {
-			i++
-			line = strings.TrimSuffix(strings.TrimRight(line, " \t\r"), `\`) + lines[i]
-			continued = true
+	// A line ending in a backslash continues on the next line. Continued
+	// values are never kept, so their lines are skipped without joining
+	// them, which keeps the work linear.
+	continuing := false
+	for i, line := range strings.Split(string(data), "\n") {
+		if i%4096 == 0 {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		ends := strings.HasSuffix(strings.TrimRight(line, " \t\r"), `\`)
+		if continuing {
+			continuing = ends
+			continue
+		}
+		if ends {
+			continuing = true
+			continue
 		}
 		t := strings.TrimSpace(line)
 		if strings.HasPrefix(t, "[") {
@@ -354,16 +381,15 @@ func cleanGitConfig(path string) error {
 				section = ""
 				continue
 			}
-			header := strings.TrimSpace(t[1:end])
-			name := header
-			if j := strings.IndexAny(name, " \t\"."); j >= 0 {
+			name := strings.TrimSpace(t[1:end])
+			if strings.ContainsAny(name, " \t\".") {
 				// A subsection: never on the allowlist.
 				name = "\x00"
 			}
 			section = strings.ToLower(name)
 			t = strings.TrimSpace(t[end+1:])
 		}
-		if t == "" || t[0] == '#' || t[0] == ';' || continued {
+		if t == "" || t[0] == '#' || t[0] == ';' {
 			continue
 		}
 		key, value, _ := strings.Cut(t, "=")
@@ -481,9 +507,15 @@ func Fingerprint(ctx context.Context, dir string, limits Limits) (map[string]str
 			return pathErr(rel, werr)
 		}
 		if rel == "." {
+			// The root's mode counts too; its type is a folder.
+			info, err := d.Info()
+			if err != nil {
+				return pathErr(rel, err)
+			}
+			fp["."] = fmt.Sprintf("dir:%o", info.Mode().Perm())
 			return nil
 		}
-		if len(fp) >= limits.MaxFiles {
+		if len(fp) > limits.MaxFiles {
 			return fmt.Errorf("%w: more than %d entries", ErrTooLarge, limits.MaxFiles)
 		}
 		info, err := d.Info()

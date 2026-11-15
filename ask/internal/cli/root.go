@@ -98,8 +98,11 @@ type options struct {
 	// throwaway copy.
 	probeReadOnly bool
 	// extraEnv adds KEY=value pairs to the tool's environment, after the
-	// config's; ask review uses it for GIT_CEILING_DIRECTORIES.
+	// config's; ask review uses it for git settings in a copy.
 	extraEnv []string
+	// stderrOnFail shows the tool's stderr tail after a failed run, as
+	// --verbose does, without the rest of --verbose; ask review sets it.
+	stderrOnFail bool
 }
 
 // registerProbe, when set by a build-tagged file, declares extra flags.
@@ -513,6 +516,10 @@ type runStats struct {
 	// text made safe for a terminal with the run's secrets known. report
 	// is the saved report's path. All may be empty.
 	final, shown, report string
+	// redact and terminal apply the run's secrets once they are known:
+	// redact replaces secret values, and terminal also makes text safe for
+	// a terminal. Both are nil before the secrets are looked up.
+	redact, terminal func(string) string
 }
 
 // runAsk runs the tool and appends one log entry for the exit, whatever
@@ -725,6 +732,8 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 		values[s.EnvVar] = v
 		byKey[s.Name] = v
 	}
+	st.redact = func(s string) string { return redact(s, byKey) }
+	st.terminal = func(s string) string { return forTerminal(s, byKey) }
 	if err := pendingSignal(d.Signals); err != nil {
 		return err
 	}
@@ -836,7 +845,7 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 		code, runErr = ExitTool, errors.New("no final message")
 	}
 
-	if o.verbose && ran && code != ExitOK {
+	if (o.verbose || o.stderrOnFail) && ran && code != ExitOK {
 		showStderr(d.Stderr, d.StderrIsTerminal, tool, out, byKey)
 	}
 

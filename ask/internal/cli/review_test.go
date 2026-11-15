@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -393,5 +395,112 @@ func TestReviewCopySetsGitCeiling(t *testing.T) {
 	pwd := strings.TrimPrefix(fields[1], "pwd=")
 	if ceiling == "" || filepath.Dir(pwd) != ceiling {
 		t.Errorf("GIT_CEILING_DIRECTORIES = %q, want the copy's parent of %q", ceiling, pwd)
+	}
+}
+
+// roSecretConfig gives the named tool one read-only secret, ro_key.
+func roSecretConfig(t *testing.T, f *fakeRun, tool string) {
+	t.Helper()
+	writeConfig(t, fmt.Sprintf(`{"tools": {%q: {"binary": %q,
+	  "secrets": [{"name": "ro_key", "env_var": "EXAMPLE_RO_TOKEN", "ref": "file:%s/ro-secret"}],
+	  "read_only_secrets": ["ro_key"]}}}`, tool, filepath.Join(f.home, "bin", "fake-"+tool), f.home))
+}
+
+func TestReviewRedactsChangedFileNames(t *testing.T) {
+	const value = "example-secret-value"
+	f, project := newReview(t, map[string]string{
+		"codex": `/bin/cat >/dev/null; : > "$EXAMPLE_RO_TOKEN"; echo ok`,
+	})
+	roSecretConfig(t, f, "codex")
+	writeSecrets(t, f.home, value)
+	for _, args := range [][]string{{"review", "-C", project, "--codex", "sol", "hi"}, {"review", "--json", "-C", project, "--codex", "sol", "hi"}} {
+		f.out.Reset()
+		if code := run(t, f.d, args...); code != 1 {
+			t.Fatalf("%v: exit %d, want 1 (changed files)", args, code)
+		}
+		if strings.Contains(f.out.String(), value) {
+			t.Errorf("%v: the secret leaked as a file name:\n%s", args, f.out.String())
+		}
+		if !strings.Contains(f.out.String(), "redacted:ro_key") {
+			t.Errorf("%v: no redaction marker:\n%s", args, f.out.String())
+		}
+	}
+	reports, _ := filepath.Glob(filepath.Join(os.Getenv("XDG_STATE_HOME"), "ask", "reports", "*review*"))
+	for _, r := range reports {
+		if data, _ := os.ReadFile(r); strings.Contains(string(data), value) {
+			t.Errorf("the combined report %s holds the secret", filepath.Base(r))
+		}
+	}
+}
+
+func TestReviewCopyIgnoresGlobalGitConfig(t *testing.T) {
+	f, project := newReview(t, map[string]string{
+		"codex": `/bin/cat >/dev/null; echo "global=$GIT_CONFIG_GLOBAL nosystem=$GIT_CONFIG_NOSYSTEM"`,
+	})
+	if code := run(t, f.d, "review", "-C", project, "--codex", "sol", "hi"); code != 0 {
+		t.Fatalf("exit %d; stderr %q", code, f.err.String())
+	}
+	if !strings.Contains(f.out.String(), "global=/dev/null nosystem=1") {
+		t.Errorf("git global and system config are not turned off:\n%s", f.out.String())
+	}
+}
+
+func TestReviewShowsToolStderrOnFailure(t *testing.T) {
+	f, project := newReview(t, map[string]string{
+		"codex": `/bin/cat >/dev/null; echo "authentication expired" >&2; exit 1`,
+	})
+	if code := run(t, f.d, "review", "-C", project, "--codex", "sol", "hi"); code != 1 {
+		t.Fatalf("exit %d, want 1", code)
+	}
+	if !strings.Contains(f.err.String(), "codex: ") || !strings.Contains(f.err.String(), "authentication expired") {
+		t.Errorf("the tool's stderr was not shown: %q", f.err.String())
+	}
+}
+
+func TestReviewCleanupWarningShown(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("uses chflags uchg to make cleanup fail")
+	}
+	f, project := newReview(t, map[string]string{
+		"codex": `/bin/cat >/dev/null; /usr/bin/chflags uchg main.go; echo ok`,
+	})
+	t.Cleanup(func() {
+		ents, _ := os.ReadDir(os.TempDir())
+		for _, e := range ents {
+			if strings.HasPrefix(e.Name(), "ask-review-") {
+				p := filepath.Join(os.TempDir(), e.Name())
+				_ = exec.Command("/usr/bin/chflags", "-R", "nouchg", p).Run()
+				_ = os.RemoveAll(p)
+			}
+		}
+	})
+	_ = run(t, f.d, "review", "-C", project, "--codex", "sol", "hi")
+	if !strings.Contains(f.err.String(), "codex: ask: warning: remove the copy folder") {
+		t.Errorf("no cleanup warning: stderr %q", f.err.String())
+	}
+}
+
+func TestReviewAfterSignalKeepsRunStatus(t *testing.T) {
+	f, project := newReview(t, map[string]string{
+		"codex": `/bin/cat >/dev/null; trap 'echo answer; exit 0' TERM INT; /bin/sleep 30 & wait`,
+	})
+	sig := make(chan os.Signal, 1)
+	f.d.Signals = sig
+	go func() {
+		time.Sleep(700 * time.Millisecond)
+		sig <- syscall.SIGINT
+	}()
+	code := run(t, f.d, "review", "--json", "-C", project, "--codex", "sol", "hi")
+	if code != exitSignalBase+sigintNumber {
+		t.Fatalf("exit %d", code)
+	}
+	var res struct {
+		Reviews []reviewResult `json:"reviews"`
+	}
+	if err := json.Unmarshal(f.out.Bytes(), &res); err != nil {
+		t.Fatalf("not JSON: %v\n%s", err, f.out.String())
+	}
+	if r := res.Reviews[0]; strings.Contains(r.Error, "canceled") || r.Exit != exitSignalBase+sigintNumber {
+		t.Errorf("codex result %+v; want the interrupt, not a cancelled copy check", r)
 	}
 }

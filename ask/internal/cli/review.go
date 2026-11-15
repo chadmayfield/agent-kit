@@ -56,10 +56,11 @@ type reviewResult struct {
 	OutputTokens int      `json:"output_tokens"`
 	ChangedFiles []string `json:"changed_files,omitempty"`
 
-	// shown is Final made safe for a terminal with the run's secrets
-	// known, and stderr holds the run's warnings.
-	shown  string
-	stderr string
+	// shown and shownError are Final and Error made safe for a terminal
+	// with the run's secrets known, and stderr holds the run's warnings,
+	// already safe for ask's stderr.
+	shown, shownError string
+	stderr            string
 }
 
 // addReviewCommand adds `ask review` to root.
@@ -203,9 +204,6 @@ func runReview(d Deps, ro reviewOptions, tools, words []string) error {
 			if line == "" {
 				continue
 			}
-			if d.StderrIsTerminal {
-				line = forTerminal(line, nil)
-			}
 			fmt.Fprintf(d.Stderr, "%s: %s\n", r.Tool, line)
 		}
 	}
@@ -278,8 +276,17 @@ func reviewPrompt(d Deps, words, files []string) (string, error) {
 
 // reviewOne runs one tool and returns its result. It never returns an
 // error: failures are recorded in the result.
-func reviewOne(ctx context.Context, d Deps, tc config.ToolConfig, p reviewPick, dir, text string, timeout time.Duration, signals chan os.Signal, stop <-chan struct{}) reviewResult {
-	res := reviewResult{Tool: p.Tool, Model: p.Model, ModelID: adapter.ResolveModel(p.Model, tc), Mode: "read-only"}
+//
+// res is a named result so the deferred cleanup warning reaches it.
+func reviewOne(ctx context.Context, d Deps, tc config.ToolConfig, p reviewPick, dir, text string, timeout time.Duration, signals chan os.Signal, stop <-chan struct{}) (res reviewResult) {
+	res = reviewResult{Tool: p.Tool, Model: p.Model, ModelID: adapter.ResolveModel(p.Model, tc), Mode: "read-only"}
+	// Errors before the run hold no tool output and no secrets.
+	redactFn := func(s string) string { return s }
+	terminalFn := func(s string) string { return forTerminal(s, nil) }
+	defer func() {
+		res.Error = redactFn(res.Error)
+		res.shownError = terminalFn(res.Error)
+	}()
 	fail := func(err error) reviewResult {
 		res.Exit, res.Error = exitCode(err), err.Error()
 		return res
@@ -322,13 +329,19 @@ func reviewOne(ctx context.Context, d Deps, tc config.ToolConfig, p reviewPick, 
 			return fail(setupErr("%v", err))
 		}
 		runDir, unverified = copyDir, true
-		// Git in the copy must not find a repository above it. The real
-		// path matches what the tool sees as its working folder.
+		// Git in the copy must not find a repository above it, nor read
+		// the user's global or system git config, which can name
+		// remotes, credential helpers and commands. The real path
+		// matches what the tool sees as its working folder.
 		ceiling := filepath.Dir(copyDir)
 		if real, err := filepath.EvalSymlinks(ceiling); err == nil {
 			ceiling = real
 		}
-		extraEnv = []string{"GIT_CEILING_DIRECTORIES=" + ceiling}
+		extraEnv = []string{
+			"GIT_CEILING_DIRECTORIES=" + ceiling,
+			"GIT_CONFIG_GLOBAL=/dev/null",
+			"GIT_CONFIG_NOSYSTEM=1",
+		}
 	}
 
 	var out, errb bytes.Buffer
@@ -336,14 +349,19 @@ func reviewOne(ctx context.Context, d Deps, tc config.ToolConfig, p reviewPick, 
 	dd.Stdin = strings.NewReader(text)
 	dd.StdinIsTerminal = false
 	dd.Stdout, dd.Stderr = &out, &errb
-	dd.StdoutIsTerminal, dd.StderrIsTerminal = false, false
+	// The run cleans its stderr for a terminal itself, while it knows the
+	// secrets.
+	dd.StdoutIsTerminal, dd.StderrIsTerminal = false, d.StderrIsTerminal
 	dd.Signals = signals
 	// A tool whose read-only setup is unverified still runs with that
 	// setup and its read-only secrets, never --write: in the copy, the
 	// fingerprint catches the setup failing, and nothing gets the wider
 	// write-mode access.
-	o := options{dir: runDir, timeout: timeout, probeReadOnly: unverified, extraEnv: extraEnv}
+	o := options{dir: runDir, timeout: timeout, probeReadOnly: unverified, extraEnv: extraEnv, stderrOnFail: true}
 	st, runErr := runAskStats(dd, o, []string{p.Tool, p.Model, "-"})
+	if st.redact != nil {
+		redactFn, terminalFn = st.redact, st.terminal
+	}
 	res.Final = strings.TrimRight(st.final, "\n")
 	res.shown = strings.TrimRight(st.shown, "\n")
 	res.stderr = errb.String()
@@ -355,22 +373,30 @@ func reviewOne(ctx context.Context, d Deps, tc config.ToolConfig, p reviewPick, 
 	}
 
 	if before != nil {
-		after, err := workspace.Fingerprint(ctx, runDir, reviewCopyLimits)
-		if err != nil {
-			res.Exit, res.Error = ExitTool, err.Error()
-			return res
-		}
-		if changed := workspace.Changed(before, after); len(changed) > 0 {
-			res.ChangedFiles = changed
+		// The check runs even after a signal: the size limits bound it,
+		// and the run's own result must not be lost to a cancelled ctx.
+		addErr := func(msg string) {
 			if res.Exit == 0 {
 				res.Exit = ExitTool
 			}
-			msg := "changed files in its copy: " + shortList(changed, reviewChangedShown)
 			if res.Error == "" {
 				res.Error = msg
 			} else {
 				res.Error += "; " + msg
 			}
+		}
+		after, err := workspace.Fingerprint(context.Background(), runDir, reviewCopyLimits)
+		if err != nil {
+			addErr("its copy was not checked: " + err.Error())
+			return res
+		}
+		if changed := workspace.Changed(before, after); len(changed) > 0 {
+			// A file name can hold a secret, so names are redacted.
+			for i, c := range changed {
+				changed[i] = redactFn(c)
+			}
+			res.ChangedFiles = changed
+			addErr("changed files in its copy: " + shortList(changed, reviewChangedShown))
 		}
 	}
 	return res
@@ -408,7 +434,11 @@ func renderReview(results []reviewResult, term bool) string {
 			b.WriteString("(no answer)\n")
 		}
 		if r.Error != "" {
-			fmt.Fprintf(&b, "error: %s\n", clean(r.Error))
+			shownErr := r.Error
+			if term {
+				shownErr = r.shownError
+			}
+			fmt.Fprintf(&b, "error: %s\n", shownErr)
 		}
 		b.WriteString("\n")
 	}

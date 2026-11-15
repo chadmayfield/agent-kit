@@ -449,12 +449,16 @@ What goes into the copy:
   the repository is stored (`core.repositoryformatversion`, `core.bare`,
   `extensions.objectformat` and a few more). Remotes, branch remotes, URL
   rewrites, credential helpers, includes, `core.worktree`, hooks paths,
-  fsmonitor, diff and filter commands are all gone, so git in the copy has
-  no remote to push to and runs no configured commands. The `hooks`
-  folder, `commondir`, `gitdir`, `objects/info/alternates`, a `.git` file
-  or symlink, and any symlink inside a git folder are left out.
+  fsmonitor, diff and filter commands are all gone. The `hooks` folder,
+  git's older push destinations `remotes` and `branches`, `commondir`,
+  `gitdir`, `objects/info/alternates`, a `.git` file or symlink, and any
+  symlink inside a git folder are left out. Git file names match in any
+  case, as git finds them on a case-insensitive disk.
 - Git in the copy runs with `GIT_CEILING_DIRECTORIES` set to the copy's
-  temp folder, so it cannot find a repository above it.
+  temp folder, so it cannot find a repository above it, and with
+  `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, so your
+  global and system git config do not apply. Together, git in the copy
+  has no configured remote to push to and runs no configured commands.
 - A folder over 512 MiB or 50,000 entries is refused for that tool with
   exit 2. Other copy failures, such as an unreadable file, fail that tool
   with exit 3. Messages name paths relative to the folder.
@@ -481,8 +485,9 @@ still print), 2 for bad arguments, 3 when `ask`'s own setup fails before
 any tool starts, and 128+n when a signal stops the review. A signal stops
 every tool, including a copy or fingerprint in progress; answers that had
 already finished still print and go into the combined report. Warnings
-from a tool's run, such as a log file that could not be written, print on
-stderr with the tool's name in front.
+from a tool's run, and the end of a failed tool's own stderr, print on
+stderr with the tool's name in front, with secrets redacted. Changed file
+names are redacted the same way, since a file name can hold a secret.
 
 ## Flags
 
