@@ -234,3 +234,32 @@ func TestReviewNeedsAPick(t *testing.T) {
 		t.Errorf("exit %d, want 2", code)
 	}
 }
+
+func TestReviewCopyUsesReadOnlySetup(t *testing.T) {
+	f, project := newReview(t, map[string]string{
+		"codex": `/bin/cat >/dev/null; echo "$@" > "$HOME/args-codex"; echo "ro=$EXAMPLE_RO_TOKEN api=$EXAMPLE_API_KEY" > "$HOME/env-codex"; echo ok`,
+	})
+	// Only the read-only secret has a file. A run that asked for the
+	// write secret too would fail its lookup with exit 3.
+	writeConfig(t, fmt.Sprintf(`{"tools": {"codex": {"binary": %q,
+	  "secrets": [
+	    {"name": "ro_key", "env_var": "EXAMPLE_RO_TOKEN", "ref": "file:%s/ro-secret"},
+	    {"name": "api_key", "env_var": "EXAMPLE_API_KEY", "ref": "file:%s/api-secret"}
+	  ],
+	  "read_only_secrets": ["ro_key"]}}}`, filepath.Join(f.home, "bin", "fake-codex"), f.home, f.home))
+	if err := os.WriteFile(filepath.Join(f.home, "ro-secret"), []byte("ro-value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := run(t, f.d, "review", "-C", project, "--codex", "sol", "hi"); code != 0 {
+		t.Fatalf("exit %d; stdout %q stderr %q", code, f.out.String(), f.err.String())
+	}
+	if args, _ := os.ReadFile(filepath.Join(f.home, "args-codex")); strings.Contains(string(args), "--write") {
+		t.Errorf("codex ran with --write in the copy: %q", args)
+	}
+	if env, _ := os.ReadFile(filepath.Join(f.home, "env-codex")); strings.TrimSpace(string(env)) != "ro=ro-value api=" {
+		t.Errorf("codex environment = %q; want only the read-only secret", env)
+	}
+	if !strings.Contains(f.out.String(), "copy") {
+		t.Errorf("summary does not say it ran in a copy:\n%s", f.out.String())
+	}
+}

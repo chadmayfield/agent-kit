@@ -39,8 +39,8 @@ type reviewOptions struct {
 }
 
 // reviewResult is one tool's review. Mode is "read-only" for a run in the
-// real folder with a verified read-only setup, or "copy" for a run with
-// --write in a throwaway copy.
+// real folder with a verified read-only setup, or "copy" for a run in a
+// throwaway copy with an unverified read-only setup.
 type reviewResult struct {
 	Tool         string   `json:"tool"`
 	Model        string   `json:"model"`
@@ -95,10 +95,10 @@ func addReviewCommand(root *cobra.Command, d Deps, tools []string) {
 }
 
 // runReview runs every picked tool at once on the same prompt and prints
-// their answers in tool order. A tool runs read-only in the real folder
-// when its read-only setup is verified for the installed version, and
-// otherwise with --write in a throwaway copy whose fingerprint must not
-// change. A signal stops every tool and ends ask with 128+n.
+// their answers in tool order. Every tool runs with its read-only setup
+// and read-only secrets. A tool whose setup is verified for the installed
+// version runs in the real folder; any other runs in a throwaway copy
+// whose fingerprint must not change. A signal stops every tool and ends ask with 128+n.
 func runReview(d Deps, ro reviewOptions, tools, words []string) error {
 	env := d.Env
 	if env == nil {
@@ -277,7 +277,7 @@ func reviewOne(d Deps, tc config.ToolConfig, p reviewPick, dir, text string, tim
 		version = func(string) (string, error) { return "", errors.New("no version check") }
 	}
 
-	runDir, write := dir, false
+	runDir, unverified := dir, false
 	var before map[string]string
 	if checkReadOnly(a, p.Tool, bin, version) != nil {
 		res.Mode = "copy"
@@ -289,7 +289,7 @@ func reviewOne(d Deps, tc config.ToolConfig, p reviewPick, dir, text string, tim
 		if before, err = workspace.Fingerprint(copyDir); err != nil {
 			return fail(setupErr("%v", err))
 		}
-		runDir, write = copyDir, true
+		runDir, unverified = copyDir, true
 	}
 
 	var out, errb bytes.Buffer
@@ -299,7 +299,11 @@ func reviewOne(d Deps, tc config.ToolConfig, p reviewPick, dir, text string, tim
 	dd.Stdout, dd.Stderr = &out, &errb
 	dd.StdoutIsTerminal, dd.StderrIsTerminal = false, false
 	dd.Signals = signals
-	o := options{write: write, dir: runDir, timeout: timeout}
+	// A tool whose read-only setup is unverified still runs with that
+	// setup and its read-only secrets, never --write: in the copy, the
+	// fingerprint catches the setup failing, and nothing gets the wider
+	// write-mode access.
+	o := options{dir: runDir, timeout: timeout, probeReadOnly: unverified}
 	st, runErr := runAskStats(dd, o, []string{p.Tool, p.Model, "-"})
 	res.Final = strings.TrimRight(st.final, "\n")
 	res.Report = st.report
