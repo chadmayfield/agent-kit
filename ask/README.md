@@ -18,6 +18,7 @@ The man page is [docs/ask.1](docs/ask.1). Read it with
 - [Prompt input](#prompt-input)
 - [Models and short names](#models-and-short-names)
 - [ask models and ask usage](#ask-models-and-ask-usage)
+- [ask review](#ask-review)
 - [Flags](#flags)
 - [Output](#output)
 - [Config file](#config-file)
@@ -389,6 +390,109 @@ trackers that read those files count `ask` runs too. claude saves to
 `~/.gemini/antigravity-cli/conversations` and opencode to its
 `opencode.db`. Those transcripts hold the prompt, and the runs show up in
 each tool's list of sessions to resume.
+
+## ask review
+
+`ask review` sends one prompt to claude, codex and agy at once and prints
+their answers together:
+
+```sh
+ask review --claude opus --codex example-codex-model --agy example-agy-model \
+  --as code "Review internal/workspace for bugs."
+```
+
+Any prompt works, built the same way as for `ask`: the words after the
+flags, `-f` files, and a lone `-` for stdin. Each tool gets the same text.
+
+Pass the files to review with `-f` when agy is one of the tools. In a
+headless run, agy's read-only mode refuses shell commands, so an agy that
+tries to read a file with one gives no answer. With the text attached, it
+does not need to.
+
+| Flag | What it does |
+|---|---|
+| `--claude <model>`, `--codex <model>`, `--agy <model>` | Review with that tool and model. Short names from the tool's `models` map work. A tool without a model from a flag or from `review.models` in the config is left out. At least one is needed. |
+| `--as <kind>` | Put a preset instruction in front of the prompt: `adversarial`, `code`, `docs` or `security`, or a kind from `review.presets`. Without it, the prompt goes as written. |
+| `--json` | Print JSON instead of text. |
+| `-C`, `--dir <folder>` | Review this folder. Default: the current folder. |
+| `--timeout <duration>` | Stop each tool after this long. Default: the tool's `timeout_seconds`, or 10m. |
+| `-f`, `--file <file>` | Add a file's text to the prompt. Repeat for more files. |
+
+The config can set default models and add or change presets:
+
+```json
+{ "review": {
+    "models": { "claude": "opus", "codex": "example-codex-model" },
+    "presets": { "plan": "Review this plan for gaps and risky steps." } } }
+```
+
+### How each tool runs
+
+Every tool runs with its read-only setup and its read-only secrets, never
+with `--write`.
+
+- A tool whose read-only setup is verified for the installed version runs
+  in the real folder. Today that is claude, with its guard.
+- Any other tool runs in a throwaway copy of the folder: a new private
+  temp folder (mode 0700) that `ask` removes afterwards. Its read-only
+  setup is unverified, so `ask` takes a fingerprint of the copy before and
+  after. If anything changed, that review fails with `changed files` and
+  lists up to 10 of them.
+
+What goes into the copy:
+
+- Files and folders keep their permission bits. FIFOs, sockets and devices
+  are left out.
+- A symlink is kept only if it is relative and resolves inside the folder.
+  It is written as the plain relative path to its target. Absolute,
+  dangling and outward links are left out.
+- `.git` is copied, so a reviewer can read history and diffs. A git
+  folder is found by the name `.git` in any case, or by holding `HEAD`
+  together with `objects`, `refs` or `commondir` (a bare repository or a
+  worktree's git folder, say). In each one, every `config` and
+  `config.worktree` is rebuilt to keep only the settings that describe how
+  the repository is stored (`core.repositoryformatversion`, `core.bare`,
+  `extensions.objectformat` and a few more). Remotes, branch remotes, URL
+  rewrites, credential helpers, includes, `core.worktree`, hooks paths,
+  fsmonitor, diff and filter commands are all gone. The `hooks` folder,
+  git's older push destinations `remotes` and `branches`, `commondir`,
+  `gitdir`, `objects/info/alternates`, a `.git` file or symlink, and any
+  symlink inside a git folder are left out. Git file names match in any
+  case, as git finds them on a case-insensitive disk.
+- Git in the copy runs with `GIT_CEILING_DIRECTORIES` set to the copy's
+  temp folder, so it cannot find a repository above it, and with
+  `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, so your
+  global and system git config do not apply. Together, git in the copy
+  has no configured remote to push to and runs no configured commands.
+- A folder over 512 MiB or 50,000 entries is refused for that tool with
+  exit 2. Other copy failures, such as an unreadable file, fail that tool
+  with exit 3. Messages name paths relative to the folder.
+
+The copy only sees changes made inside it. A tool still has network
+access, and where its own sandbox allows, it could push to an explicit
+URL with your SSH keys or write to an absolute path, including a path in
+the original folder. Only a verified read-only setup closes that.
+
+### Output
+
+Text output has one block per tool, in the order claude, codex, agy, then
+a summary: tool, model ID, where it ran (`read-only` or `copy`), exit
+code, time, tokens and report path. Each tool's run is logged and saves
+its own report as usual, and the whole review is saved as a combined
+report whose path ends the output.
+
+`--json` prints `{"reviews": [...], "report": "<path>"}`. Each review has
+`tool`, `model`, `model_id`, `mode`, `exit`, `error`, `final`, `report`,
+`duration_ms`, `input_tokens`, `output_tokens` and `changed_files`.
+
+Exit codes: 0 when every review succeeded, 1 when any failed (the others
+still print), 2 for bad arguments, 3 when `ask`'s own setup fails before
+any tool starts, and 128+n when a signal stops the review. A signal stops
+every tool, including a copy or fingerprint in progress; answers that had
+already finished still print and go into the combined report. Warnings
+from a tool's run, and the end of a failed tool's own stderr, print on
+stderr with the tool's name in front, with secrets redacted. Changed file
+names are redacted the same way, since a file name can hold a secret.
 
 ## Flags
 

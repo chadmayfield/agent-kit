@@ -18,6 +18,16 @@ import (
 type Config struct {
 	Tools      map[string]ToolConfig `json:"tools"`
 	ReportDays int                   `json:"report_days"`
+	Review     ReviewConfig          `json:"review"`
+}
+
+// ReviewConfig holds the defaults for `ask review`.
+type ReviewConfig struct {
+	// Models maps a tool name to the model ask review uses when no flag
+	// picks one.
+	Models map[string]string `json:"models"`
+	// Presets adds --as kinds, or replaces a built-in kind's text.
+	Presets map[string]string `json:"presets"`
 }
 
 // ToolConfig is the configuration for one CLI. It never holds a secret

@@ -218,3 +218,19 @@ func TestLoadRejectsDuplicateEnvVar(t *testing.T) {
 		t.Errorf("error %q: want the env_var named and no ref", err)
 	}
 }
+
+func TestConfigReviewKey(t *testing.T) {
+	dir := t.TempDir()
+	p := writeConfig(t, dir, `{"review": {"models": {"claude": "opus", "codex": "gpt-6.1-sol"}, "presets": {"plan": "Check the plan."}}}`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Review.Models["codex"] != "gpt-6.1-sol" || cfg.Review.Presets["plan"] != "Check the plan." {
+		t.Errorf("review = %+v", cfg.Review)
+	}
+	p = writeConfig(t, t.TempDir(), `{"review": {"modles": {}}}`)
+	if _, err := Load(p); err == nil {
+		t.Error("an unknown key under review was accepted")
+	}
+}

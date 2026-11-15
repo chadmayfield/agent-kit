@@ -144,6 +144,7 @@ func addInfoCommands(root *cobra.Command, d Deps, tools []string) {
 		})
 		root.AddCommand(c)
 	}
+	addReviewCommand(root, d, tools)
 }
 
 // pickTools returns every tool, or the one named in args.

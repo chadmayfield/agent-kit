@@ -27,6 +27,17 @@ Exit codes: 0 ok, 1 tool failed or no match, 2 bad arguments, refused or
 stopped by the read-only guard, 3 setup failed, 124 timeout, 128+n killed
 by signal n.
 
+For a review from several models at once, use `ask review`. It sends one
+prompt to claude, codex and agy and prints the answers together:
+
+```sh
+ask review --claude <model> --codex <model> --agy <model> [--as adversarial|code|docs|security] -f <file>
+```
+
+It never runs a tool with `--write`; tools whose read-only setup is not
+verified review a throwaway copy, and a review that changed the copy
+fails. Treat each answer as one opinion to verify against the code.
+
 To pick a reviewer by remaining quota, run `ask usage` first. It shows
 each tool's 5-hour and weekly windows, how much is used and when each
 resets; `ask usage --json` gives the same data for scripts. `ask models

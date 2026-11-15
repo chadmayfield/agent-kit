@@ -15,15 +15,15 @@ var docFiles = []string{
 	filepath.Join("..", "..", "docs", "ask.1"),
 }
 
-// TestDocsNameEveryFlag fails when a visible flag of the root command, long
-// or short, is missing from the guide or the man page. The man page writes
+// TestDocsNameEveryFlag fails when a visible flag of the root command or a
+// subcommand, long or short, is missing from the guide or the man page. The man page writes
 // a dash as \-, so both spellings count there.
 func TestDocsNameEveryFlag(t *testing.T) {
 	cmd := NewRootCmd(Deps{})
 	cmd.InitDefaultHelpFlag()
 
 	var names, shorts []string
-	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+	visit := func(f *pflag.Flag) {
 		if f.Hidden {
 			return
 		}
@@ -31,7 +31,12 @@ func TestDocsNameEveryFlag(t *testing.T) {
 		if f.Shorthand != "" {
 			shorts = append(shorts, f.Shorthand)
 		}
-	})
+	}
+	cmd.Flags().VisitAll(visit)
+	// Subcommands such as models, usage and review have their own flags.
+	for _, sub := range cmd.Commands() {
+		sub.Flags().VisitAll(visit)
+	}
 	if len(names) == 0 {
 		t.Fatal("the root command defines no flags")
 	}
