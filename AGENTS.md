@@ -12,9 +12,10 @@ ask-<tool> <model> [prompt...]
 
 - Read-only is the default. `ask` runs a tool read-only only if its
   read-only setup passed its test on the installed major version.
-  Otherwise it refuses with exit 2. Today only claude runs read-only, and
-  a guard checks each such run: if claude loads a hook, an MCP server or
-  a tool other than Read, Grep and Glob, `ask` stops it and exits 2.
+  Otherwise it refuses with exit 2. Today claude and codex run
+  read-only. For claude a guard checks each run: if claude loads a hook,
+  an MCP server or a tool other than Read, Grep and Glob, `ask` stops it
+  and exits 2. codex runs in its `read-only` sandbox.
 - Add `--write` only when the other agent must edit files.
 - By default `ask` prints only the tool's final message.
 - `--final <regex>` prints only the last matching line, plus the report

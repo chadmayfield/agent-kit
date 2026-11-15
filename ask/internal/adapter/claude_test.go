@@ -424,3 +424,14 @@ func TestFindVersions(t *testing.T) {
 		}
 	}
 }
+
+func TestCoversMajorZeroNeedsMinor(t *testing.T) {
+	v := Verification{OK: true, LastTested: "tool 0.5.2"}
+	if !v.Covers("tool 0.5.9") || v.Covers("tool 0.6.0") || v.Covers("tool 1.5.2") {
+		t.Error("a 0.x version must match major and minor")
+	}
+	w := Verification{OK: true, LastTested: "2.1.319 (Claude Code)"}
+	if !w.Covers("2.9.0 (Claude Code)") || w.Covers("3.0.0 (Claude Code)") {
+		t.Error("from 1.x on, the major number alone decides")
+	}
+}

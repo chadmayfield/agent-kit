@@ -51,14 +51,41 @@ type Verification struct {
 }
 
 // Covers reports whether the test also counts for version: both must name
-// the same major version.
+// the same major version. Below 1.0, where a minor release can change
+// behavior, they must also name the same minor version.
 func (v Verification) Covers(version string) bool {
 	want, ok := MajorVersion(v.LastTested)
 	if !ok {
 		return false
 	}
 	got, ok := MajorVersion(version)
-	return ok && got == want
+	if !ok || got != want {
+		return false
+	}
+	if want != 0 {
+		return true
+	}
+	wantMinor, ok := minorVersion(v.LastTested)
+	if !ok {
+		return false
+	}
+	gotMinor, ok := minorVersion(version)
+	return ok && gotMinor == wantMinor
+}
+
+// minorVersion returns the minor number of the versions in s, failing
+// when they disagree.
+func minorVersion(s string) (int, bool) {
+	vs := FindVersions(s)
+	if len(vs) == 0 {
+		return 0, false
+	}
+	for _, v := range vs[1:] {
+		if v.Nums[1] != vs[0].Nums[1] {
+			return 0, false
+		}
+	}
+	return vs[0].Nums[1], true
 }
 
 // Version is one version number found in a CLI's --version output.

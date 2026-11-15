@@ -259,7 +259,11 @@ mean whatever the installed claude maps them to; give a full model ID to
 pin one.
 .TP
 .B codex
-Read\-only is refused; its test was inconclusive.
+Read\-only runs on any 0.163.x version, in the
+.B read\-only
+sandbox with the user config and rules files skipped.
+The test passed on codex\-cli 0.163.0; below 1.0, a version must match
+the tested major and minor version.
 With
 .BR \-\-write ,
 codex runs in the
