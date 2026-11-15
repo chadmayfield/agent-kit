@@ -29,10 +29,22 @@ type outputFunc func(binary string, env []string, args ...string) ([]byte, error
 
 // runOutput is the default outputFunc. It runs the command the way ask runs
 // a tool: in its own process group, with listTimeout covering the whole
-// group, the temp folder as its working folder, and signals passed on.
+// group, a new private folder (mode 0700, removed afterwards) as its
+// working folder, and signals passed on. A shared temp folder such as
+// /tmp would let another local user plant a project config there for
+// the tool to load.
 func runOutput(signals <-chan os.Signal) outputFunc {
 	return func(bin string, env []string, args ...string) ([]byte, error) {
-		inv := runner.Invocation{Binary: bin, Args: args, Env: env, Dir: os.TempDir()}
+		dir, err := os.MkdirTemp("", "ask-list-")
+		if err != nil {
+			return nil, fmt.Errorf("make a working folder: %w", err)
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			_ = os.RemoveAll(dir)
+			return nil, fmt.Errorf("make a working folder: %w", err)
+		}
+		inv := runner.Invocation{Binary: bin, Args: args, Env: env, Dir: dir,
+			Cleanup: func() { _ = os.RemoveAll(dir) }}
 		out, err := runner.Run(context.Background(), inv, listTimeout, signals)
 		switch {
 		case err != nil:

@@ -698,3 +698,25 @@ func TestCodexReadingEdgeCases(t *testing.T) {
 		t.Errorf("older reading not found:\n%s", f.out.String())
 	}
 }
+
+func TestRunOutputUsesPrivateFolder(t *testing.T) {
+	env := []string{"PATH=/usr/bin:/bin"}
+	out, err := runOutput(nil)("/bin/sh", env, "-c", "pwd; stat -f %Lp . 2>/dev/null || stat -c %a .")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Fields(string(out))
+	if len(lines) != 2 {
+		t.Fatalf("output %q", out)
+	}
+	dir, mode := lines[0], lines[1]
+	if !strings.Contains(filepath.Base(dir), "ask-list-") {
+		t.Errorf("working folder %q is not a fresh ask folder", dir)
+	}
+	if mode != "700" {
+		t.Errorf("working folder mode %s, want 700", mode)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("working folder %q was not removed: %v", dir, err)
+	}
+}

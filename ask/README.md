@@ -359,8 +359,8 @@ list shows as `config only`. `--json` prints JSON instead.
 `ask models` and `ask usage` run the tools' own commands (`agy models`,
 `opencode models`, `agy --version`, `agy --print /usage`) the way `ask`
 runs a tool: in their own process group, with only the base environment
-and the tool's `pass_env` (never its secrets), in the temp folder, and
-stopped after 30 seconds. Files `ask` reads from other tools must be
+and the tool's `pass_env` (never its secrets), in a new private folder
+that `ask` removes afterwards, and stopped after 30 seconds. Files `ask` reads from other tools must be
 regular files under a size limit: 64 KiB for `claude-limits.json` and
 16 MiB for codex's model cache. Codex session lines over 4 MiB are
 skipped.
