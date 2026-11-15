@@ -701,20 +701,21 @@ func TestCodexReadingEdgeCases(t *testing.T) {
 
 func TestRunOutputUsesPrivateFolder(t *testing.T) {
 	env := []string{"PATH=/usr/bin:/bin"}
-	out, err := runOutput(nil)("/bin/sh", env, "-c", "pwd; stat -f %Lp . 2>/dev/null || stat -c %a .")
+	// ls -ld works the same on macOS and Linux; stat's flags do not.
+	out, err := runOutput(nil)("/bin/sh", env, "-c", "pwd; ls -ld .")
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines := strings.Fields(string(out))
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	if len(lines) != 2 {
 		t.Fatalf("output %q", out)
 	}
-	dir, mode := lines[0], lines[1]
+	dir, perms := lines[0], strings.Fields(lines[1])[0]
 	if !strings.Contains(filepath.Base(dir), "ask-list-") {
 		t.Errorf("working folder %q is not a fresh ask folder", dir)
 	}
-	if mode != "700" {
-		t.Errorf("working folder mode %s, want 700", mode)
+	if !strings.HasPrefix(perms, "drwx------") {
+		t.Errorf("working folder permissions %s, want drwx------", perms)
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("working folder %q was not removed: %v", dir, err)
