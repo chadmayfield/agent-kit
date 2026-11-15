@@ -5,9 +5,12 @@
 package record
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -169,6 +172,9 @@ type LogEntry struct {
 	Exit          int    `json:"exit"`
 	InputTokens   int    `json:"input_tokens"`
 	OutputTokens  int    `json:"output_tokens"`
+	// Guard is why the read-only guard stopped the run, or empty. It is
+	// fixed text from the adapter, never tool output.
+	Guard string `json:"guard,omitempty"`
 }
 
 // AppendLog adds e to the log at path as one JSON line. The file is mode
@@ -196,4 +202,61 @@ func AppendLog(path string, e LogEntry) error {
 		return fmt.Errorf("log: write: %w", err)
 	}
 	return f.Close()
+}
+
+// maxLogLine is the longest log line ReadLog reads. Entries are small;
+// a longer line is counted as bad and skipped.
+const maxLogLine = 1 << 20
+
+// ReadLog returns the entries in the log at path, oldest first. A missing
+// log returns no entries. The log must be a regular file; it is opened
+// without blocking, so a FIFO in its place cannot hang ask. Lines that are
+// not valid entries, or are longer than maxLogLine, are skipped and
+// counted in bad.
+func ReadLog(path string) (entries []LogEntry, bad int, err error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, 0, nil
+	}
+	if err != nil {
+		return nil, 0, fmt.Errorf("log: open: %w", err)
+	}
+	defer f.Close()
+	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
+		return nil, 0, errors.New("log: not a regular file")
+	}
+	r := bufio.NewReaderSize(f, 64<<10)
+	var line []byte
+	tooLong := false
+	for {
+		chunk, rerr := r.ReadSlice('\n')
+		if !tooLong {
+			if len(line)+len(chunk) > maxLogLine {
+				line, tooLong = nil, true
+			} else {
+				line = append(line, chunk...)
+			}
+		}
+		if rerr == bufio.ErrBufferFull {
+			continue
+		}
+		if rerr != nil && rerr != io.EOF {
+			return nil, 0, fmt.Errorf("log: read: %w", rerr)
+		}
+		switch {
+		case tooLong:
+			bad++
+		case len(bytes.TrimSpace(line)) > 0:
+			var e LogEntry
+			if json.Unmarshal(line, &e) != nil || e.Tool == "" {
+				bad++
+			} else {
+				entries = append(entries, e)
+			}
+		}
+		line, tooLong = line[:0], false
+		if rerr == io.EOF {
+			return entries, bad, nil
+		}
+	}
 }

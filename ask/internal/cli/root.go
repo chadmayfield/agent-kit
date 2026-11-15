@@ -60,6 +60,10 @@ type Deps struct {
 	Environ func() []string
 	// Resolve looks up one secret value. Nil means secret.Resolve.
 	Resolve func(config.SecretRef) (string, error)
+	// Output runs a tool's own list command, such as `agy models`, with env
+	// as its whole environment, and returns its stdout. Nil means
+	// runOutput.
+	Output outputFunc
 }
 
 // exitError carries an exit code chosen by ask itself.
@@ -108,7 +112,12 @@ prompt text, even one that looks like a flag:
   ask codex some-model -- --verbose is a flag name
 
 Without --write, ask runs a tool only if its read-only setup passed its
-test on the installed version. Otherwise it refuses.
+test on the installed major version. Otherwise it refuses. A guard checks
+each read-only claude run and stops it if claude loads a hook, an MCP
+server or a tool other than Read, Grep and Glob.
+
+ask models lists each tool's models. ask usage shows each tool's rate
+limit windows; add --runs for ask's own run totals.
 
 Tools: %s
 
@@ -196,6 +205,11 @@ func NewRootCmd(d Deps) *cobra.Command {
 	f.StringArrayVarP(&o.files, "file", "f", nil, "add a file's text to the prompt; repeat for more files")
 	if registerProbe != nil {
 		registerProbe(cmd, &o)
+	}
+	// Under an ask-<tool> name the first word is a model, so a model named
+	// "models" or "usage" must still work there.
+	if alias == "" {
+		addInfoCommands(cmd, d, names)
 	}
 
 	return cmd
@@ -361,7 +375,7 @@ func stateDir(env func(string) string) (string, error) {
 }
 
 // checkReadOnly refuses a read-only run unless the adapter's read-only
-// setup passed its test on the installed version of the CLI.
+// setup passed its test on the installed major version of the CLI.
 func checkReadOnly(a adapter.Adapter, tool, bin string, version func(string) (string, error)) error {
 	ro := a.ReadOnly()
 	if !ro.OK {
@@ -371,8 +385,8 @@ func checkReadOnly(a adapter.Adapter, tool, bin string, version func(string) (st
 	if err != nil {
 		return adapter.Refuse("cannot read the %s version, so its read-only test does not apply", tool)
 	}
-	if ver != ro.TestedVersion {
-		return adapter.Refuse("%s version %q is not the tested %q; read-only is refused until it is tested again", tool, ver, ro.TestedVersion)
+	if !ro.Covers(ver) {
+		return adapter.Refuse("%s version %q is not the tested major version (last tested: %q); read-only is refused until the test in ask/docs/read-only-tests.md passes on it", tool, ver, ro.LastTested)
 	}
 	return nil
 }
@@ -488,6 +502,8 @@ type runStats struct {
 	// dryRun is true for a --dry-run, which starts nothing and is not
 	// logged.
 	dryRun bool
+	// guard is why the read-only guard stopped the run, or empty.
+	guard string
 }
 
 // runAsk runs the tool and appends one log entry for the exit, whatever
@@ -514,7 +530,7 @@ func runAsk(d Deps, o options, args []string) error {
 		Time: now().UTC(), Tool: args[0], Model: args[1],
 		ModelID: st.modelID, ReportedModel: st.reportedModel,
 		DurationMS: st.duration.Milliseconds(), Exit: ExitOK,
-		InputTokens: st.inTok, OutputTokens: st.outTok,
+		InputTokens: st.inTok, OutputTokens: st.outTok, Guard: st.guard,
 	}
 	if err != nil {
 		entry.Exit = exitCode(err)
@@ -638,7 +654,7 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 		if o.dryRun {
 			// A dry run starts nothing, not even `--version`.
 			if ro := a.ReadOnly(); ro.OK {
-				fmt.Fprintf(d.Stderr, "read-only: verified for %q\n", ro.TestedVersion)
+				fmt.Fprintf(d.Stderr, "read-only: verified for the major version of %q\n", ro.LastTested)
 			} else {
 				fmt.Fprintln(d.Stderr, "read-only: not verified")
 			}
@@ -755,6 +771,13 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 		if res.Model != "" {
 			reported = redact(res.Model, byKey)
 		}
+		if out.GuardErr != nil {
+			// The answer of a run the guard stopped is not trusted. Its
+			// token counts stay, since they were spent.
+			final = ""
+			st.guard = out.GuardErr.Error()
+			break
+		}
 		stopped := out.TimedOut || out.Interrupted || out.Signal > 0
 		if stopped || out.ExitCode == 0 || final != "" {
 			break
@@ -774,6 +797,8 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 		// A signal arrived between the first attempt and the retry.
 		code, runErr = ee.code, ee.err
 		final = ""
+	case out.GuardErr != nil:
+		code, runErr = ExitUsage, fmt.Errorf("read-only guard stopped %s and discarded its output: %v", tool, out.GuardErr)
 	case out.TimedOut:
 		code, runErr = ExitTimeout, fmt.Errorf("%s timed out after %v", tool, timeout)
 	case out.Interrupted:

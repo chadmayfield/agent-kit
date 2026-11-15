@@ -53,8 +53,11 @@ type Outcome struct {
 	// even as the CLI exited, or when ctx was cancelled before the CLI
 	// exited.
 	Interrupted bool
-	Stdout      []byte
-	Stderr      []byte
+	// GuardErr is the error from the Invocation's Guard, or nil. When Line
+	// returned it, Run stopped the CLI.
+	GuardErr error
+	Stdout   []byte
+	Stderr   []byte
 	// StdoutTruncated is true when stdout passed maxStdout and the rest
 	// was dropped.
 	StdoutTruncated bool
@@ -120,8 +123,16 @@ func Run(ctx context.Context, inv Invocation, timeout time.Duration, signals <-c
 
 	stdout := &headBuffer{max: maxStdout}
 	stderr := &tailBuffer{max: maxStderr}
+	var stdoutSink io.Writer = stdout
+	var lines *lineGuard
+	var tripped <-chan error
+	if inv.Guard != nil {
+		lines = &lineGuard{guard: inv.Guard, tripped: make(chan error, 1)}
+		stdoutSink = io.MultiWriter(stdout, lines)
+		tripped = lines.tripped
+	}
 	copied := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(stdout, p.stdoutR); copied <- struct{}{} }()
+	go func() { _, _ = io.Copy(stdoutSink, p.stdoutR); copied <- struct{}{} }()
 	go func() { _, _ = io.Copy(stderr, p.stderrR); copied <- struct{}{} }()
 	if p.stdinW != nil {
 		go func() {
@@ -156,6 +167,10 @@ wait:
 			// select picks at random among ready cases, so a signal
 			// that came in with the exit may still be waiting.
 			takePendingSignal(signals, &out)
+			break wait
+		case gerr := <-tripped:
+			out.GuardErr = gerr
+			stoppedByRun = !hasExited(exited)
 			break wait
 		case <-timer:
 			if hasExited(exited) {
@@ -214,7 +229,97 @@ wait:
 	}
 	out.Stdout, out.StdoutTruncated = stdout.buf.Bytes(), stdout.dropped
 	out.Stderr, out.StderrTruncated = stderr.bytes()
+	if lines != nil {
+		out.GuardErr = lines.finish(out.GuardErr, stoppedByRun || out.Interrupted || out.TimedOut, out.ExitCode)
+	}
 	return out, nil
+}
+
+// maxGuardLine is the longest stdout line a Guard checks. It matches
+// maxStdout, the most the parser ever reads. A longer line trips the guard,
+// since it cannot be checked. Tests lower it.
+var maxGuardLine = 64 << 20
+
+// errLineTooLong trips the guard on a line it cannot check.
+var errLineTooLong = errors.New("a stdout line was too long for the read-only guard to check")
+
+// lineGuard splits stdout into lines for a Guard. Write always reports
+// success, so the copy keeps draining the pipe after a trip.
+type lineGuard struct {
+	guard   Guard
+	tripped chan error
+	pending []byte
+	err     error
+}
+
+func (g *lineGuard) Write(p []byte) (int, error) {
+	n := len(p)
+	for len(p) > 0 && g.err == nil {
+		i := bytes.IndexByte(p, '\n')
+		if i < 0 {
+			g.add(p)
+			break
+		}
+		g.add(p[:i])
+		if g.err == nil {
+			g.check(g.pending)
+		}
+		g.pending = g.pending[:0]
+		p = p[i+1:]
+	}
+	return n, nil
+}
+
+// add appends part of a line, and trips the guard once the line passes
+// maxGuardLine.
+func (g *lineGuard) add(p []byte) {
+	if len(g.pending)+len(p) > maxGuardLine {
+		g.pending = nil
+		g.trip(errLineTooLong)
+		return
+	}
+	g.pending = append(g.pending, p...)
+}
+
+func (g *lineGuard) check(line []byte) {
+	if err := g.guard.Line(line); err != nil {
+		g.trip(err)
+	}
+}
+
+// trip records the first error and tells Run. tripped has room for one
+// send, and g.err keeps it to one.
+func (g *lineGuard) trip(err error) {
+	if g.err == nil {
+		g.err = err
+		g.tripped <- err
+	}
+}
+
+// finish returns the run's guard error after the copy is done. A trip
+// during the run always counts. Otherwise, a CLI that Run stopped or that
+// failed on its own keeps that result, so the caller can report it and
+// retry. After a clean exit, a last line with no newline is checked and
+// then End runs.
+func (g *lineGuard) finish(prev error, stopped bool, exitCode int) error {
+	if prev != nil {
+		return prev
+	}
+	if g.err != nil {
+		return g.err
+	}
+	// A CLI that Run stopped, or that failed on its own, keeps that result.
+	// Its last line may be cut short, so it is not checked.
+	if stopped || exitCode != 0 {
+		return nil
+	}
+	if len(g.pending) > 0 {
+		g.check(g.pending)
+		if g.err != nil {
+			return g.err
+		}
+	}
+	return g.guard.End()
 }
 
 // takePendingSignal records a signal that is already waiting on signals,

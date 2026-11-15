@@ -67,7 +67,7 @@ func TestCodexReadOnlyFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"exec", "--json", "--ephemeral", "--skip-git-repo-check",
+	want := []string{"exec", "--json", "--skip-git-repo-check",
 		"--ignore-user-config", "--ignore-rules",
 		"-m", "gpt-long-name", "-C", "/tmp/work", "-s", "read-only", "-"}
 	if !slices.Equal(inv.Args, want) {
@@ -87,7 +87,7 @@ func TestCodexWriteFlags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"exec", "--json", "--ephemeral", "--skip-git-repo-check",
+	want := []string{"exec", "--json", "--skip-git-repo-check",
 		"-m", "gpt-x", "-C", "/tmp/work", "-s", "workspace-write", "-"}
 	if !slices.Equal(inv.Args, want) {
 		t.Errorf("Args = %q\nwant   %q", inv.Args, want)

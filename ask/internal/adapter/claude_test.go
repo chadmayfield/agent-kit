@@ -57,7 +57,7 @@ func TestClaudeReadOnlyFlags(t *testing.T) {
 		"-p", "--output-format", "stream-json", "--verbose",
 		"--model", "example-model",
 		"--safe-mode", "--restricted", "--strict-mcp-config", "--no-chrome",
-		"--tools", "Read,Grep,Glob", "--no-session-persistence",
+		"--tools", "Read,Grep,Glob", "--include-hook-events",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("read-only argv =\n %q\nwant\n %q", got, want)
@@ -103,8 +103,15 @@ func TestClaudeReadOnlyVerifiedForTestedVersion(t *testing.T) {
 	if !ro.OK {
 		t.Fatal("ReadOnly().OK is false; the read-only setup passed its test")
 	}
-	if want := "2.1.319 (Claude Code)"; ro.TestedVersion != want {
-		t.Errorf("TestedVersion = %q, want %q", ro.TestedVersion, want)
+	for _, ver := range []string{"2.1.319 (Claude Code)", "2.1.325 (Claude Code)", "2.40.0 (Claude Code)"} {
+		if !ro.Covers(ver) {
+			t.Errorf("Covers(%q) = false, want true", ver)
+		}
+	}
+	for _, ver := range []string{"3.0.0 (Claude Code)", "1.0.0 (Claude Code)", "Claude Code", "", "3.0.0-beta 2.1.319 (Claude Code)", "Update 2.1 available\n3.0.0 (Claude Code)"} {
+		if ro.Covers(ver) {
+			t.Errorf("Covers(%q) = true, want false", ver)
+		}
 	}
 	// The read-only argv needs both flags.
 	args := buildClaude(t, Request{Prompt: "x"}, config.ToolConfig{})
@@ -288,6 +295,132 @@ func TestResolveModel(t *testing.T) {
 	for in, want := range map[string]string{"short": "example/model", "blank": "blank", "other": "other", "": ""} {
 		if got := ResolveModel(in, tc); got != want {
 			t.Errorf("ResolveModel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestMajorVersion(t *testing.T) {
+	cases := map[string]int{
+		"2.1.325 (Claude Code)": 2,
+		"codex-cli 0.163.0":     0,
+		"opencode v2.0.32":      2,
+		"1.5.9":                 1,
+		"10.2":                  10,
+	}
+	for in, want := range cases {
+		got, ok := MajorVersion(in)
+		if !ok || got != want {
+			t.Errorf("MajorVersion(%q) = %d, %v; want %d, true", in, got, ok, want)
+		}
+	}
+	// Pre-release and build suffixes keep their major number.
+	for in, want := range map[string]int{"3.0.0-beta (Claude Code)": 3, "v2.1.0+abc": 2} {
+		if got, ok := MajorVersion(in); !ok || got != want {
+			t.Errorf("MajorVersion(%q) = %d, %v; want %d, true", in, got, ok, want)
+		}
+	}
+	// Two different majors fail closed, whichever comes first.
+	for _, in := range []string{
+		"", "Claude Code", "2", "2.x.1", "1.2.3.4", "02.1.0", "-1.2.0",
+		"3.0.0-beta 2.1.319 (Claude Code)",
+		"Update 2.1 available\n3.0.0 (Claude Code)",
+		"Update 2.1 available\nClaude Code (3.0.0)",
+		"2.1.0 [v3.0.0]",
+	} {
+		if got, ok := MajorVersion(in); ok {
+			t.Errorf("MajorVersion(%q) = %d, true; want false", in, got)
+		}
+	}
+}
+
+func TestClaudeReadOnlyHasGuard(t *testing.T) {
+	ro, err := NewClaude().Build(Request{Model: "m", Prompt: "x"}, config.ToolConfig{Binary: "/bin/sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ro.Guard == nil {
+		t.Error("read-only invocation has no guard")
+	}
+	w, err := NewClaude().Build(Request{Model: "m", Prompt: "x", Write: true}, config.ToolConfig{Binary: "/bin/sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.Guard != nil {
+		t.Error("--write invocation has a guard")
+	}
+}
+
+func TestClaudeGuardUnit(t *testing.T) {
+	const initOK = `{"type":"system","subtype":"init","tools":["Read","Grep","Glob"],"mcp_servers":[]}`
+	run := func(lines ...string) (lineErr, endErr error) {
+		g := &claudeGuard{}
+		for _, l := range lines {
+			if err := g.Line([]byte(l)); err != nil {
+				return err, nil
+			}
+		}
+		return nil, g.End()
+	}
+	if le, ee := run("", initOK, `{"type":"assistant"}`, "  ", `{"type":"result","subtype":"success"}`); le != nil || ee != nil {
+		t.Errorf("clean run: line %v, end %v", le, ee)
+	}
+	if le, ee := run(initOK, `{"type":"system","subtype":"init","tools":[],"mcp_servers":[]}`); le != nil || ee != nil {
+		t.Errorf("second clean init: line %v, end %v", le, ee)
+	}
+	bad := map[string][]string{
+		"hook subtype":      {initOK, `{"type":"system","subtype":"hook_started"}`},
+		"hook type":         {initOK, `{"type":"Hook_Event"}`},
+		"hook before init":  {`{"type":"system","subtype":"hook_response"}`},
+		"extra tool":        {`{"type":"system","subtype":"init","tools":["Read","Write"],"mcp_servers":[]}`},
+		"mcp server":        {`{"type":"system","subtype":"init","tools":[],"mcp_servers":[{"name":"x"}]}`},
+		"no tools":          {`{"type":"system","subtype":"init","mcp_servers":[]}`},
+		"no mcp_servers":    {`{"type":"system","subtype":"init","tools":[]}`},
+		"tools not a list":  {`{"type":"system","subtype":"init","tools":"Read","mcp_servers":[]}`},
+		"other event first": {`{"type":"assistant"}`},
+		"not json first":    {"not-json", initOK},
+		"not json later":    {initOK, "Warning: something"},
+		"broken json":       {initOK, `{"type":`},
+		"array line":        {initOK, `[1,2]`},
+		"bad second init":   {initOK, `{"type":"system","subtype":"init","tools":["Bash"],"mcp_servers":[]}`},
+	}
+	// Lines the guard cannot read fail at End, not at once.
+	endOnly := map[string]bool{"not json first": true, "not json later": true, "broken json": true, "array line": true}
+	for name, lines := range bad {
+		le, ee := run(lines...)
+		err := le
+		if endOnly[name] {
+			if le != nil {
+				t.Errorf("%s: stopped at once (%v), want a failure at End", name, le)
+			}
+			err = ee
+		}
+		if err == nil {
+			t.Errorf("%s: no error", name)
+		} else if strings.Contains(err.Error(), "Write") || strings.Contains(err.Error(), "Warning") {
+			t.Errorf("%s: error quotes the stream: %v", name, err)
+		}
+	}
+	// A result before init passes Line; End still needs an init.
+	if le, ee := run(`{"type":"result","subtype":"error_during_execution","is_error":true}`); le != nil || ee == nil {
+		t.Errorf("result before init: line %v, end %v; want nil, an error", le, ee)
+	}
+	if _, ee := run(); ee == nil {
+		t.Error("End with no init: no error")
+	}
+	if _, ee := run(`{"type":"result","subtype":"success"}`[:0]); ee == nil {
+		t.Error("End after only blank input: no error")
+	}
+}
+
+func TestFindVersions(t *testing.T) {
+	got := FindVersions("agy v1.1.10-beta, Update available: (1.1.11) 2.0 x.y 1.2.3.4")
+	want := []Version{{Nums: [3]int{1, 1, 10}, Pre: true}, {Nums: [3]int{1, 1, 11}}, {Nums: [3]int{2, 0, 0}}}
+	if len(got) != len(want) {
+		t.Fatalf("FindVersions = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("version %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}
 }

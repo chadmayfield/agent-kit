@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -220,5 +221,67 @@ func TestStateDirSymlinkRefused(t *testing.T) {
 		if fi.Mode().Perm() != 0o700 {
 			t.Errorf("case %d: state folder mode %v, want 0700", i, fi.Mode().Perm())
 		}
+	}
+}
+
+func TestReadLog(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "log.jsonl")
+	if es, bad, err := ReadLog(path); err != nil || bad != 0 || len(es) != 0 {
+		t.Fatalf("missing log: %v %d %v", es, bad, err)
+	}
+	now := time.Date(2026, 11, 15, 19, 0, 0, 0, time.UTC)
+	for _, e := range []LogEntry{
+		{Time: now, Tool: "codex", Model: "m", InputTokens: 10, OutputTokens: 2},
+		{Time: now.Add(time.Minute), Tool: "claude", Model: "h", Exit: 2, Guard: "x"},
+	} {
+		if err := AppendLog(path, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("not json\n{}\n\n")
+	_ = f.Close()
+	es, bad, err := ReadLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bad != 2 || len(es) != 2 {
+		t.Fatalf("got %d entries, %d bad; want 2, 2", len(es), bad)
+	}
+	if es[0].Tool != "codex" || es[0].InputTokens != 10 || es[1].Guard != "x" {
+		t.Errorf("entries = %+v", es)
+	}
+}
+
+func TestReadLogBounds(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo.jsonl")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, _, err := ReadLog(fifo); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("a FIFO was read as the log")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ReadLog hung on a FIFO")
+	}
+
+	path := filepath.Join(dir, "log.jsonl")
+	long := `{"tool":"x","pad":"` + strings.Repeat("a", maxLogLine) + `"}`
+	data := `{"tool":"codex"}` + "\n" + long + "\n" + `{"tool":"claude"}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	es, bad, err := ReadLog(path)
+	if err != nil || bad != 1 || len(es) != 2 || es[1].Tool != "claude" {
+		t.Errorf("entries %+v, bad %d, err %v; want codex and claude, 1 bad", es, bad, err)
 	}
 }

@@ -17,6 +17,7 @@ The man page is [docs/ask.1](docs/ask.1). Read it with
 - [Read-only and --write](#read-only-and---write)
 - [Prompt input](#prompt-input)
 - [Models and short names](#models-and-short-names)
+- [ask models and ask usage](#ask-models-and-ask-usage)
 - [Flags](#flags)
 - [Output](#output)
 - [Config file](#config-file)
@@ -39,7 +40,8 @@ One run of `ask` does this, in order:
    pass `-`, and any `-f` files.
 3. It finds the tool's binary.
 4. Without `--write`, it checks that the tool's read-only setup passed its
-   test on the installed version. If not, it refuses with exit 2.
+   test on the installed major version. If not, it refuses with exit 2.
+   For claude, a guard then checks the run as it streams.
 5. It looks up the secrets the config allows for this mode.
 6. It starts the tool in its own process group, with the prompt off the
    command line, and waits for it to finish or time out.
@@ -145,16 +147,42 @@ ask claude haiku --verbose --timeout 5m "Summarize the README."
 
 | Tool | Read-only (no `--write`) | `--write` |
 |---|---|---|
-| claude | Runs on version `2.1.319 (Claude Code)` only. | Runs. |
+| claude | Runs on any `2.x.x` version, with a guard on each run. | Runs. |
 | codex | Refused. Its read-only test was inconclusive. | Runs. |
 | agy | Refused. Its read-only setup is not tested. | Runs. |
 | opencode | Refused. It has no read-only setup. | Runs. |
 
-claude read-only is verified for the version it was tested on, and only
-that one. `ask` runs `claude --version` before each read-only run and
-compares the trimmed output with `2.1.319 (Claude Code)`. After a claude
-upgrade the strings differ, and `ask` refuses read-only runs until the new
-version passes the same test. `--write` runs do not check the version.
+claude read-only passed its test on `2.1.319 (Claude Code)`. `ask` runs
+`claude --version` before each read-only run and accepts any version with
+the same major number, 2. A `3.x.x` release is refused until it passes the
+same test. `--write` runs do not check the version.
+
+Each read-only claude run also has a guard. `ask` adds
+`--include-hook-events` and reads claude's output as it arrives. It stops
+claude, discards its answer and exits 2 when any of these happen:
+
+- The run does not start with claude's `init` event, or that event has no
+  `tools` or `mcp_servers` list.
+- The `init` event lists a tool other than Read, Grep and Glob, or any MCP
+  server.
+- A hook event appears.
+- An event other than a `result` arrives before `init`, or a JSON event has
+  an unexpected shape.
+- A stdout line is longer than 64 MiB.
+- claude exits 0 after a stdout line that is not JSON, or without an
+  `init` event.
+
+When claude fails on its own, for example on a bad flag or a login error,
+that stays an ordinary failure, exit 1 with one retry, even if it printed
+an error line or a `result` event first. A timeout or Ctrl-C that cuts a
+line in half stays a timeout (exit 124) or an interrupt (exit 130).
+
+The guard checks claude's output while claude keeps running; it does not
+hold claude back. It sees what claude loaded only after claude reports it,
+so a hook or MCP server that leaked in may have started once before `ask`
+stops the run. The model's first reply takes far longer than the check, so
+in practice the run stops before the model acts, but nothing enforces that
+order.
 
 [docs/read-only-tests.md](docs/read-only-tests.md) describes the test and
 what it found for each tool.
@@ -165,7 +193,7 @@ Read-only is the default. `--write` turns it off.
 
 | Tool | Read-only run | `--write` run |
 |---|---|---|
-| claude | Only the Read, Grep and Glob tools. No hooks, no MCP servers, no browser tools, no saved session. Your user settings and the repo's `CLAUDE.md` are not loaded. | `--permission-mode acceptEdits`: claude may edit files in the working folder. claude runs without `--safe-mode`, so your user settings load, and `ask` does not turn off hooks or MCP servers. |
+| claude | Only the Read, Grep and Glob tools. No hooks, no MCP servers, no browser tools. The session is saved under `~/.claude/projects` like any other. Your user settings and the repo's `CLAUDE.md` are not loaded. | `--permission-mode acceptEdits`: claude may edit files in the working folder. claude runs without `--safe-mode`, so your user settings load, and `ask` does not turn off hooks or MCP servers. |
 | codex | Refused today. The setup `ask` would use is the `read-only` sandbox, with your user config and rules files skipped. | The `workspace-write` sandbox. Your user config and rules load. |
 | agy | Refused. The setup is not tested. | Runs with `--mode accept-edits`. |
 | opencode | Refused. `ask` has no read-only setup for it. | Runs `opencode run` with `--auto`. |
@@ -279,6 +307,88 @@ Each log line has three model fields:
 
 For a claude alias, `reported_model` shows which model the alias meant on
 that run.
+
+## ask models and ask usage
+
+`ask models [tool]` lists the models each tool knows, and marks the ones a
+config short name points at. A short name whose target the tool does not
+list shows as `config only`. `--json` prints JSON instead.
+
+| Tool | Where the list comes from |
+|---|---|
+| codex | `~/.codex/models_cache.json` |
+| agy | `agy models` |
+| opencode | `opencode models` |
+| claude | No list. claude takes aliases such as `opus` and `sonnet`, or a full model name. |
+
+`ask usage [tool]` prints each tool's rate limit windows. `--runs` adds
+`ask`'s own runs, and `--json` prints the same data as JSON.
+
+```
+ codex     plan pro · credits 125.50 · as of Nov 3 09:40 · from last codex session
+   all models  5h  ████░░░░░░░░░░░░░░░░   20% used   80% left  resets Nov 3 12:10 · in 2h30m
+               7d  █████████░░░░░░░░░░░   45% used   55% left  resets Nov 6 08:00 · in 2d22h
+```
+
+- Limits. One block per tool. The header line names the plan and credits
+  when the tool reports them, when the reading was taken (`live` or
+  `as of`) and where it came from. Each window gets one row: the group of
+  models that share it, its length (`5h` or `7d`), a meter, the percent
+  used and left, and when it resets. A reset time that has passed means
+  the reading is out of date. Tools with limits come first. On a
+  terminal the meter is green below 50% used, yellow from 50%, orange
+  from 70% and red from 90%. Orange needs a 256-color terminal
+  (`COLORTERM` is `truecolor` or `24bit`, or `TERM` contains `256color`
+  or `direct`); other terminals show yellow instead. `NO_COLOR` turns
+  color off.
+
+  | Tool | Where the limits come from |
+  |---|---|
+  | agy | `agy --print /usage --output-format json`, read live. From agy 1.1.11 on, agy answers it without starting an agent turn or spending quota, so `ask` checks `agy --version` first and shows `not available` on an older agy. Each model group has its own windows. |
+  | codex | The newest session file in `~/.codex/sessions` that has rate limits, plus the plan and credit balance. The reading is as fresh as that session. A `RESETS` time that has already passed means the reading is out of date. |
+  | claude | `<state>/claude-limits.json`, which a status line command writes. Claude Code passes its plan windows only to the status line command, only for Pro, Max and Ultra plans, and only after a model reply. Each plan shows the windows it has: Ultra has no 5-hour window, Max does. Without the file, claude shows `not available`. |
+  | opencode | `not available`. |
+- `--runs` adds, inside each tool's block, the runs `ask` made per model
+  ID from its own log: runs, input and output tokens, total time,
+  failures, guard stops, and runs that ended before the tool started (a
+  refusal, bad arguments, a setup failure or a signal).
+  A short name and its full model name count together.
+  `--since YYYY-MM-DD` counts only runs on or after that date, and turns
+  on `--runs`.
+
+`ask models` and `ask usage` run the tools' own commands (`agy models`,
+`opencode models`, `agy --version`, `agy --print /usage`) the way `ask`
+runs a tool: in their own process group, with only the base environment
+and the tool's `pass_env` (never its secrets), in a new private folder
+that `ask` removes afterwards, and stopped after 30 seconds. Files `ask` reads from other tools must be
+regular files under a size limit: 64 KiB for `claude-limits.json` and
+16 MiB for codex's model cache. Codex session lines over 4 MiB are
+skipped.
+
+### Claude limits from the status line
+
+Claude Code gives its 5-hour and weekly windows only to a status line
+command, as `rate_limits` in the JSON on its stdin. To let `ask usage` read
+them, have that command save the object to `<state>/claude-limits.json`:
+
+```json
+{"written_at": "2026-11-03T16:40:00Z",
+ "rate_limits": {"seven_day": {"used_percentage": 25, "resets_at": 1794470400}}}
+```
+
+`written_at` is when the status line saw the values, in UTC. `resets_at` is
+in Unix seconds, as Claude Code sends it. `ask` shows `five_hour` as `5h`
+and `seven_day` as `7d`, and any other key under its own name. The reading
+is as fresh as the last status line update in an interactive session.
+
+### Sessions are saved
+
+`ask` lets every tool save its session where it normally does, so usage
+trackers that read those files count `ask` runs too. claude saves to
+`~/.claude/projects`, codex to `~/.codex/sessions`, agy to
+`~/.gemini/antigravity-cli/conversations` and opencode to its
+`opencode.db`. Those transcripts hold the prompt, and the runs show up in
+each tool's list of sessions to resume.
 
 ## Flags
 
@@ -517,6 +627,7 @@ and `ask` never deletes or trims it.
 | `exit` | `ask`'s exit code. |
 | `input_tokens` | Input tokens, as the tool reports them. |
 | `output_tokens` | Output tokens, as the tool reports them. |
+| `guard` | Why the read-only guard stopped the run. Only present after a guard stop. |
 
 A refused run is logged too, with its exit code, and so are most bad
 arguments, such as an empty prompt or a bad `--final` regex. These runs add
@@ -567,11 +678,19 @@ Each message below appears on stderr after `ask: `.
   The tool has no verified read-only setup. Add `--write` if the tool may
   edit files, or use claude for a read-only run.
 
-- `<tool> version "<found>" is not the tested "<tested>"; read-only is refused until it is tested again`
+- `<tool> version "<found>" is not the tested major version (last tested: "<tested>"); read-only is refused until the test in ask/docs/read-only-tests.md passes on it`
 
-  The installed claude is not the version its read-only setup was tested
-  on, usually after an upgrade. Use `--write`, or go back to the tested
+  The installed claude has a different major version from the one its
+  read-only setup was tested on. Use `--write` until the test in
+  [docs/read-only-tests.md](docs/read-only-tests.md) passes on the new
   version.
+
+- `read-only guard stopped <tool> and discarded its output: <reason>`
+
+  The guard saw a hook, an extra tool, an MCP server or an unexpected event
+  in a read-only claude run. `ask` does not retry. Check your claude
+  settings and plugins, and see whether a claude update changed what
+  `--safe-mode` and `--restricted` turn off.
 
 - `cannot read the <tool> version, so its read-only test does not apply`
 

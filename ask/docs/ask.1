@@ -1,4 +1,4 @@
-.TH ASK 1 2026-11-07 "agent-kit" "User Commands"
+.TH ASK 1 2026-11-15 "agent-kit" "User Commands"
 .SH NAME
 ask, ask-codex, ask-claude, ask-agy, ask-opencode \- send one prompt to a coding agent CLI
 .SH SYNOPSIS
@@ -26,6 +26,17 @@ ask, ask-codex, ask-claude, ask-agy, ask-opencode \- send one prompt to a coding
 .RI [ options ]
 .I model
 .RI [ prompt ...]
+.br
+.B ask models
+.RB [ \-\-json ]
+.RI [ tool ]
+.br
+.B ask usage
+.RB [ \-\-runs ]
+.RB [ \-\-since
+.IR YYYY\-MM\-DD ]
+.RB [ \-\-json ]
+.RI [ tool ]
 .SH DESCRIPTION
 .B ask
 sends one prompt to a coding agent CLI and prints the tool's final message
@@ -101,7 +112,7 @@ Without
 .BR \-\-write ,
 .B ask
 runs a tool only if its read\-only setup passed its test on the installed
-version, compared with the trimmed output of
+major version, read from the trimmed output of
 .IB tool " \-\-version" .
 Otherwise it refuses with exit 2.
 A read\-only run gets only the secrets listed in
@@ -209,11 +220,20 @@ Print the help text.
 .SH TOOLS
 .TP
 .B claude
-Read\-only runs only on version
-.BR "2.1.319 (Claude Code)" ,
-with the Read, Grep and Glob tools and no hooks, MCP servers or user
-settings.
-After an upgrade, read\-only is refused until the new version is tested.
+Read\-only runs on any 2.x.x version, with the Read, Grep and Glob tools
+and no hooks, MCP servers or user settings.
+The test last passed on 2.1.319.
+A 3.x.x release is refused until it passes the same test.
+Each read\-only run has a guard: ask adds
+.B \-\-include\-hook\-events
+and stops claude, discards its answer and exits 2 when an event other
+than a result comes before the init event, the init event lists a tool
+other than Read, Grep and Glob or any MCP server, a hook event appears, or
+a stdout line is longer than 64 MiB.
+A run that exits 0 also fails the guard after a non-JSON line or without
+an init event; a run that fails on its own stays an ordinary failure.
+The guard checks the output while claude runs; it does not hold claude
+back.
 With
 .BR \-\-write ,
 claude runs with
@@ -256,6 +276,43 @@ A tool's
 .B models
 map in the config turns a short name into a full model name.
 A name not in the map passes through as typed.
+.PP
+Every tool saves its session where it normally does, so usage trackers
+that read those files count ask runs too.
+Those transcripts hold the prompt.
+.SH COMMANDS
+.TP
+\fBask models\fP [\fB\-\-json\fP] [\fItool\fP]
+List the models each tool knows, and mark the ones a config short name
+points at.
+codex's list comes from
+.IR ~/.codex/models_cache.json ,
+agy's and opencode's from their own
+.B models
+command.
+claude has no list.
+.TP
+\fBask usage\fP [\fB\-\-runs\fP] [\fB\-\-since\fP \fIYYYY\-MM\-DD\fP] [\fB\-\-json\fP] [\fItool\fP]
+Print each tool's rate limit windows: one block per tool, one meter row
+per window with the percent used and left and when it resets.
+.B \-\-runs
+adds ask's runs per model in each block.
+agy's windows come live from
+.BR "agy \-\-print /usage" ,
+which spends no quota.
+codex's come from the newest file in
+.I ~/.codex/sessions
+that has them.
+claude's come from
+.IR $XDG_STATE_HOME/ask/claude\-limits.json ,
+which a Claude Code status line command must write from the
+.B rate_limits
+object it receives.
+opencode shows
+.BR "not available" .
+.B \-\-since
+counts only runs on or after that date and implies
+.BR \-\-runs .
 .SH EXIT STATUS
 .TP
 .B 0
@@ -370,9 +427,10 @@ One JSON line per run, mode 0600, with the fields
 .BR reported_model ,
 .BR duration_ms ,
 .BR exit ,
-.B input_tokens
-and
-.BR output_tokens .
+.BR input_tokens ,
+.B output_tokens
+and, after a guard stop,
+.BR guard .
 It never holds the prompt.
 .SH EXAMPLES
 Ask claude, read\-only:
