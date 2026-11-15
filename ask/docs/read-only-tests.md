@@ -10,14 +10,16 @@ read-only claude run.
 | Tool | Tested version | Result |
 |---|---|---|
 | claude | `2.1.319 (Claude Code)` | PASS, with both `--safe-mode` and `--restricted` |
-| codex | `codex-cli 0.163.0` | NOT VERIFIED |
+| codex | `codex-cli 0.163.0` | PASS (2026-11-15) |
 | agy | none | not tested |
 | opencode | none | not tested |
 
 A verified setup counts for every version with the same major number as
-the one it was tested on. `ask` reads the major number from the trimmed
-output of `<binary> --version`. After a major upgrade, `ask` refuses
-read-only runs again until the new version passes the same test.
+the one it was tested on. Below 1.0, where a minor release can change
+behavior, the minor number must match too: codex's test counts for any
+`0.163.x`. `ask` reads the numbers from the trimmed output of
+`<binary> --version`. After such an upgrade, `ask` refuses read-only runs
+again until the new version passes the same test.
 
 Within a major version, a guard checks every read-only claude run instead
 of a new test per release. See [The guard](#the-guard).
@@ -77,21 +79,36 @@ The read-only argv is:
 codex exec --json --skip-git-repo-check --ignore-user-config --ignore-rules -m <model> -C <dir> -s read-only -
 ```
 
-codex stays unverified for these reasons:
+codex passed on `codex-cli 0.163.0` on 2026-11-15. A first test on
+2026-11-07 was inconclusive; the re-test fixed both gaps it left.
 
-- The file check was inconclusive. The model did not try to write in
-  either read-only run, so the test never saw the sandbox refuse a write.
-  In one run the model reported write errors without running any command.
-- The hook check was inconclusive. A newly added hook needs to be trusted
-  before it fires, and it did not fire in the control run either.
-- The MCP checks passed. Neither the user-scope nor the project-scope test
-  server started in the read-only run.
-- User skills still load under `--ignore-user-config`. The model read a
-  user skill file in every read-only run. Reads are allowed in read-only
-  mode, but user skills still steer the model.
+- The test ran with a scratch `CODEX_HOME` (codex's home folder), so the
+  real `~/.codex` was never edited. The scratch home links to the real
+  `auth.json` rather than copying it, since a ChatGPT login rotates its
+  refresh token.
+- Hooks: a codex hook runs only when `hooks.state."<key>".trusted_hash`
+  in `config.toml` matches its current hash; the 2026-11-07 hook was never
+  trusted, so it could not fire. The re-test trusted its hooks the
+  supported way, with each hook's key and hash from `codex app-server`'s
+  `hooks/list`. In the control run the trusted user hooks fired. Under the
+  read-only argv no hook fired: `--ignore-user-config` drops the trust
+  state, so trusted user hooks cannot run. Project-scope hooks
+  (`.codex/hooks.json` in the folder) were not loaded either.
+- Files: in read-only mode, `codex exec --json` does not report shell
+  commands as `command_execution` items, so the stream cannot show an
+  attempt. A `PreToolUse` hook recorded each tool call instead, in a run
+  with `--dangerously-bypass-hook-trust` added only for that evidence. It
+  recorded `Bash` calls for `rm canary.txt`, `touch new.txt` and the
+  outside write, and none took effect. The answer carried the agreed token
+  and codex exited 0.
+- MCP servers: neither the user-scope nor the project-scope stub server
+  started.
+- User skills still load under `--ignore-user-config`. Skills are
+  instructions, not tools, and reading is allowed in read-only mode, so
+  they do not fail the check.
 
-The 2026-11-07 runs used `--ephemeral`. `ask` no longer passes it, so the
-next test must use the command line above.
+`--dangerously-bypass-hook-trust` makes user hooks run even with
+`--ignore-user-config`, so `ask` never passes it; a test pins that.
 
 ### The guard
 

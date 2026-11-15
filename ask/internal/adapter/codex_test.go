@@ -55,8 +55,40 @@ func TestCodexInvocationHasNoPromptInArgs(t *testing.T) {
 	if !(Codex{}).Prompt().OK {
 		t.Error("Prompt().OK = false, want true")
 	}
-	if (Codex{}).ReadOnly().OK {
-		t.Error("ReadOnly().OK = true, want false until tested")
+}
+
+func TestCodexReadOnlyVerified(t *testing.T) {
+	ro := (Codex{}).ReadOnly()
+	if !ro.OK || ro.LastTested != "codex-cli 0.163.0" {
+		t.Fatalf("ReadOnly() = %+v; want verified on codex-cli 0.163.0", ro)
+	}
+	// codex is 0.x, where a minor release can change behavior, so the
+	// test counts for the same major and minor only.
+	for _, ver := range []string{"codex-cli 0.163.0", "codex-cli 0.163.7"} {
+		if !ro.Covers(ver) {
+			t.Errorf("Covers(%q) = false, want true", ver)
+		}
+	}
+	for _, ver := range []string{"codex-cli 0.164.0", "codex-cli 0.162.9", "codex-cli 1.0.0", "codex-cli", ""} {
+		if ro.Covers(ver) {
+			t.Errorf("Covers(%q) = true, want false", ver)
+		}
+	}
+}
+
+func TestCodexReadOnlyNeverBypassesHookTrust(t *testing.T) {
+	// The read-only test showed hooks run when hook trust is bypassed, so
+	// the read-only command line must never bypass it.
+	for _, write := range []bool{false, true} {
+		inv, err := (Codex{}).Build(Request{Model: "m", Prompt: "x", Dir: t.TempDir(), Write: write}, config.ToolConfig{Binary: "/bin/sh"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range inv.Args {
+			if strings.Contains(a, "bypass") || strings.Contains(a, "dangerously") {
+				t.Errorf("write=%v: argv %q has %s", write, inv.Args, a)
+			}
+		}
 	}
 }
 

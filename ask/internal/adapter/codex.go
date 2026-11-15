@@ -19,8 +19,19 @@ func (Codex) Name() string { return "codex" }
 // Efforts returns nil: ask passes no effort setting to codex.
 func (Codex) Efforts() []string { return nil }
 
-// ReadOnly reports the read-only setup as untested.
-func (Codex) ReadOnly() Verification { return Verification{OK: false} }
+// codexLastTested is the trimmed `codex --version` output of the install
+// where the read-only setup passed its test (2026-11-15; see
+// docs/read-only-tests.md). codex is below 1.0, so the test counts for
+// this major and minor version only.
+const codexLastTested = "codex-cli 0.163.0"
+
+// ReadOnly is verified for codexLastTested's major and minor version. The
+// read-only argv must never bypass hook trust: the test showed that
+// --dangerously-bypass-hook-trust makes user hooks run even with
+// --ignore-user-config.
+func (Codex) ReadOnly() Verification {
+	return Verification{OK: true, LastTested: codexLastTested}
+}
 
 // Prompt reports stdin input as tested: codex reads the prompt from stdin
 // when the prompt argument is `-`.

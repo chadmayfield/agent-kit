@@ -120,7 +120,7 @@ read from the folder you start `ask` in, not the `-C` folder:
 ask claude haiku -f review-prompt.md -C ~/src/project
 ```
 
-Let codex edit files. `--write` is required for codex today:
+Let codex edit files with `--write`:
 
 ```sh
 ask codex my-model --write "Add a unit test for the parse function."
@@ -149,7 +149,7 @@ ask claude haiku --verbose --timeout 5m "Summarize the README."
 | Tool | Read-only (no `--write`) | `--write` |
 |---|---|---|
 | claude | Runs on any `2.x.x` version, with a guard on each run. | Runs. |
-| codex | Refused. Its read-only test was inconclusive. | Runs. |
+| codex | Runs on any `0.163.x` version. | Runs. |
 | agy | Refused. Its read-only setup is not tested. | Runs. |
 | opencode | Refused. It has no read-only setup. | Runs. |
 
@@ -157,6 +157,11 @@ claude read-only passed its test on `2.1.319 (Claude Code)`. `ask` runs
 `claude --version` before each read-only run and accepts any version with
 the same major number, 2. A `3.x.x` release is refused until it passes the
 same test. `--write` runs do not check the version.
+
+codex read-only passed its test on `codex-cli 0.163.0`. codex is below
+1.0, where a minor release can change behavior, so `ask` accepts the same
+major and minor version only: any `0.163.x`. A `0.164.0` is refused until
+it passes the same test.
 
 Each read-only claude run also has a guard. `ask` adds
 `--include-hook-events` and reads claude's output as it arrives. It stops
@@ -195,7 +200,7 @@ Read-only is the default. `--write` turns it off.
 | Tool | Read-only run | `--write` run |
 |---|---|---|
 | claude | Only the Read, Grep and Glob tools. No hooks, no MCP servers, no browser tools. The session is saved under `~/.claude/projects` like any other. Your user settings and the repo's `CLAUDE.md` are not loaded. | `--permission-mode acceptEdits`: claude may edit files in the working folder. claude runs without `--safe-mode`, so your user settings load, and `ask` does not turn off hooks or MCP servers. |
-| codex | Refused today. The setup `ask` would use is the `read-only` sandbox, with your user config and rules files skipped. | The `workspace-write` sandbox. Your user config and rules load. |
+| codex | The `read-only` sandbox, with your user config and rules files skipped. Hooks, MCP servers and file writes stay off; user skills still load. | The `workspace-write` sandbox. Your user config and rules load. |
 | agy | Refused. The setup is not tested. | Runs with `--mode accept-edits`. |
 | opencode | Refused. `ask` has no read-only setup for it. | Runs `opencode run` with `--auto`. |
 
@@ -432,7 +437,7 @@ Every tool runs with its read-only setup and its read-only secrets, never
 with `--write`.
 
 - A tool whose read-only setup is verified for the installed version runs
-  in the real folder. Today that is claude, with its guard.
+  in the real folder. Today that is claude, with its guard, and codex.
 - Any other tool runs in a throwaway copy of the folder: a new private
   temp folder (mode 0700) that `ask` removes afterwards. Its read-only
   setup is unverified, so `ask` takes a fingerprint of the copy before and

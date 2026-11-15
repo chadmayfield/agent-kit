@@ -87,8 +87,16 @@ func Copy(ctx context.Context, src string, limits Limits) (dir string, cleanup f
 		if rerr != nil {
 			return rerr
 		}
+		// An entry can vanish between being listed and being read, as
+		// git's maintenance lock files do; it is skipped, not an error.
 		if werr != nil {
+			if errors.Is(werr, fs.ErrNotExist) {
+				return nil
+			}
 			return pathErr(rel, werr)
+		}
+		if beforeEntry != nil {
+			beforeEntry(p)
 		}
 		target := filepath.Join(dst, rel)
 		// A .git file points at another repository's git folder (a
@@ -111,6 +119,12 @@ func Copy(ctx context.Context, src string, limits Limits) (dir string, cleanup f
 			}
 		}
 		info, err := d.Info()
+		if errors.Is(err, fs.ErrNotExist) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		if err != nil {
 			return pathErr(rel, err)
 		}
@@ -128,6 +142,9 @@ func Copy(ctx context.Context, src string, limits Limits) (dir string, cleanup f
 				return nil
 			}
 			link, err := os.Readlink(p)
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
 			if err != nil {
 				return pathErr(rel, err)
 			}
@@ -141,6 +158,10 @@ func Copy(ctx context.Context, src string, limits Limits) (dir string, cleanup f
 		case d.Type().IsRegular():
 			n, err := copyFile(ctx, p, target, info.Mode().Perm(), limits.MaxBytes-bytes)
 			bytes += n
+			if errors.Is(err, fs.ErrNotExist) {
+				_ = os.Remove(target)
+				return nil
+			}
 			if errors.Is(err, errOverBudget) {
 				return fmt.Errorf("%w: more than %d bytes", ErrTooLarge, limits.MaxBytes)
 			}
@@ -182,6 +203,10 @@ func removeAll(root string) error {
 }
 
 var errOverBudget = errors.New("over the byte budget")
+
+// beforeEntry, when a test sets it, runs as the copy reaches each entry,
+// before reading it.
+var beforeEntry func(path string)
 
 // pathErr replaces the absolute path in an *fs.PathError with rel, so an
 // error never shows where the folder lives. nil stays nil.

@@ -964,3 +964,35 @@ func TestCopyFileRefusesSymlinkSource(t *testing.T) {
 		t.Error("hashFile followed a symlink")
 	}
 }
+
+func TestCopySkipsEntriesThatVanish(t *testing.T) {
+	src, _ := tree(t)
+	// The walk sees the source's real path.
+	real, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone := filepath.Join(real, "sub", "b.go")
+	goneDir := filepath.Join(real, "empty")
+	// Delete a file and a folder right after the walk lists them, as git
+	// maintenance does with its lock files.
+	beforeEntry = func(p string) {
+		if p == gone || p == goneDir {
+			_ = os.RemoveAll(p)
+		}
+	}
+	t.Cleanup(func() { beforeEntry = nil })
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
+	if err != nil {
+		t.Fatalf("an entry that vanished during the copy failed it: %v", err)
+	}
+	defer func() { _ = cleanup() }()
+	for _, rel := range []string{"sub/b.go", "empty"} {
+		if _, err := os.Lstat(filepath.Join(dir, rel)); !os.IsNotExist(err) {
+			t.Errorf("%s should be absent from the copy", rel)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.txt")); err != nil {
+		t.Errorf("other files were not copied: %v", err)
+	}
+}

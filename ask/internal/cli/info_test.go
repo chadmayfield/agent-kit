@@ -145,9 +145,18 @@ const agyUsage = `{"conversation_id":"","status":"SUCCESS","response":"x","comma
 func TestUsageShowsCodexWindowAndRuns(t *testing.T) {
 	f := newInfo(t, map[string]string{"agy usage": agyUsage})
 	// The newest file has no rate limits, so the one before it is used.
-	codexSession(t, f.home, "2026/11/06", "rollout-a.jsonl", strings.Replace(rateLine, "12.0", "77.0", 1))
+	// An older reading: older timestamp, in an older session.
+	older := strings.Replace(strings.Replace(rateLine, "12.0", "77.0", 1), "2026-11-07T15:00:00Z", "2026-11-06T15:00:00Z", 1)
+	codexSession(t, f.home, "2026/11/06", "rollout-a.jsonl", older)
 	codexSession(t, f.home, "2026/11/07", "rollout-b.jsonl", rateLine)
 	codexSession(t, f.home, "2026/11/07", "rollout-c.jsonl", `{"type":"event_msg","payload":{"type":"token_count","rate_limits":null}}`)
+	// The older reading's file was written last. The newest reading still
+	// wins, since codex picks by the reading's own timestamp; this pins
+	// that, independent of how close together the files were written.
+	later := time.Now().Add(time.Minute)
+	if err := os.Chtimes(filepath.Join(f.home, ".codex", "sessions", "2026/11/06", "rollout-a.jsonl"), later, later); err != nil {
+		t.Fatal(err)
+	}
 
 	log := filepath.Join(os.Getenv("XDG_STATE_HOME"), "ask", "log.jsonl")
 	day := time.Date(2026, 11, 7, 12, 0, 0, 0, time.Local)
