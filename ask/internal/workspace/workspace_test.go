@@ -92,30 +92,55 @@ func TestCopyMatchesSource(t *testing.T) {
 	}
 }
 
-func TestCopyKeepsSymlinks(t *testing.T) {
+func TestCopyKeepsOnlyInsideLinks(t *testing.T) {
 	src, _ := tree(t)
-	if err := os.Symlink("/etc", filepath.Join(src, "link")); err != nil {
-		t.Fatal(err)
+	outside := t.TempDir()
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
+	// Kept: relative links that resolve inside the folder.
+	must(os.Symlink("a.txt", filepath.Join(src, "to-a")))
+	must(os.Symlink("../a.txt", filepath.Join(src, "sub", "up-a")))
+	must(os.Symlink("sub", filepath.Join(src, "to-sub")))
+	// Left out: absolute links, links that climb out, links into the
+	// source by absolute path, dangling links, and a link whose text
+	// stays inside but whose real path leaves through a linked folder.
+	must(os.Symlink("/etc", filepath.Join(src, "abs")))
+	must(os.Symlink("../"+filepath.Base(outside), filepath.Join(src, "climb")))
+	must(os.Symlink(filepath.Join(src, "a.txt"), filepath.Join(src, "abs-inside")))
+	must(os.Symlink("missing", filepath.Join(src, "dangling")))
+	must(os.MkdirAll(filepath.Join(src, "x", "y"), 0o755))
+	must(os.Symlink("../..", filepath.Join(src, "x", "y", "d")))
+	must(os.Symlink("d/../../..", filepath.Join(src, "x", "y", "tricky")))
+
 	dir, cleanup, err := Copy(src, noLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	target, err := os.Readlink(filepath.Join(dir, "link"))
-	if err != nil || target != "/etc" {
-		t.Fatalf("copied link = %q, %v; want a link to /etc", target, err)
+	for rel, want := range map[string]string{"to-a": "a.txt", "sub/up-a": "../a.txt", "to-sub": "sub", "x/y/d": "../.."} {
+		if got, err := os.Readlink(filepath.Join(dir, rel)); err != nil || got != want {
+			t.Errorf("%s = %q, %v; want a link to %q", rel, got, err, want)
+		}
+	}
+	for _, rel := range []string{"abs", "climb", "abs-inside", "dangling", "x/y/tricky"} {
+		if _, err := os.Lstat(filepath.Join(dir, rel)); !os.IsNotExist(err) {
+			t.Errorf("%s was copied; it can reach outside the copy", rel)
+		}
 	}
 	fp, err := Fingerprint(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fp["link"] != "link:/etc" {
-		t.Errorf("fingerprint[link] = %q", fp["link"])
+	if fp["to-a"] != "link:a.txt" {
+		t.Errorf("fingerprint[to-a] = %q", fp["to-a"])
 	}
 	for rel := range fp {
-		if strings.HasPrefix(rel, "link/") {
-			t.Errorf("fingerprint followed the link: %s", rel)
+		if strings.HasPrefix(rel, "to-sub/") {
+			t.Errorf("fingerprint followed a link: %s", rel)
 		}
 	}
 }

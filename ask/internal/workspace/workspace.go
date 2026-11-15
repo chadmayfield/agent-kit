@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 )
 
@@ -26,8 +27,10 @@ type Limits struct {
 // Copy copies src into a new temp folder with mode 0700 and returns the
 // copy's path, which ends in src's base name, and a cleanup that removes
 // the temp folder. Regular files keep their permission bits, folders keep
-// theirs, and symlinks are copied as links and never followed. FIFOs,
-// sockets and devices are skipped. Over a limit, Copy removes what it made
+// theirs, and symlinks are copied as links and never followed. A symlink
+// that is absolute, dangling, or resolves outside src is left out, so a
+// tool cannot write through the copy to files outside it. FIFOs, sockets
+// and devices are skipped. Over a limit, Copy removes what it made
 // and returns an error naming the limit.
 func Copy(src string, limits Limits) (dir string, cleanup func(), err error) {
 	root, err := os.MkdirTemp("", "ask-review-")
@@ -46,6 +49,11 @@ func Copy(src string, limits Limits) (dir string, cleanup func(), err error) {
 		return "", nil, fmt.Errorf("make the copy folder: %w", err)
 	}
 	dst := filepath.Join(root, filepath.Base(src))
+	// Links are judged against the source's real path.
+	srcReal, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return "", nil, fmt.Errorf("copy %s: %w", filepath.Base(src), err)
+	}
 
 	type dirMode struct {
 		path string
@@ -85,6 +93,11 @@ func Copy(src string, limits Limits) (dir string, cleanup func(), err error) {
 			if err != nil {
 				return err
 			}
+			if !linkStaysInside(p, link, srcReal) {
+				// A tool writing through it would change files outside
+				// the copy, which the fingerprint cannot see.
+				return nil
+			}
 			return os.Symlink(link, target)
 		case d.Type().IsRegular():
 			n, err := copyFile(p, target, info.Mode().Perm(), limits.MaxBytes-bytes)
@@ -111,6 +124,26 @@ func Copy(src string, limits Limits) (dir string, cleanup func(), err error) {
 }
 
 var errTooBig = errors.New("over the byte limit")
+
+// linkStaysInside reports whether the symlink at p, with target link, is
+// safe to copy: the target is relative, and the link resolves, through
+// every link on the way, to a path inside srcReal. A relative link that
+// resolves inside the source resolves to the same place inside the copy.
+// Absolute links, dangling links and links that leave the folder fail.
+func linkStaysInside(p, link, srcReal string) bool {
+	if filepath.IsAbs(link) {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(srcReal, resolved)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
 
 // copyFile copies a regular file and returns the bytes written. It fails
 // with errTooBig once more than budget bytes would be written. The source
