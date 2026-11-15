@@ -375,7 +375,96 @@ func TestCopyRejectsLinksThatClimbOutAndBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	if _, err := os.Lstat(filepath.Join(dir, "sub", "back")); !os.IsNotExist(err) {
-		t.Errorf("a link that climbs above the folder was copied")
+	// The copy holds the canonical path to the resolved target, never
+	// the climbing text.
+	if got, err := os.Readlink(filepath.Join(dir, "sub", "back")); err != nil || got != "../a.txt" {
+		t.Errorf("sub/back = %q, %v; want the canonical ../a.txt", got, err)
+	}
+}
+
+func TestCopyRewritesKeptLinksCanonically(t *testing.T) {
+	src, _ := tree(t)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(os.MkdirAll(filepath.Join(src, "p", "q"), 0o755))
+	// d points two levels up; "d/../a.txt" means a.txt in the folder the
+	// kernel reaches through d, not the text's parent.
+	must(os.Symlink("../..", filepath.Join(src, "p", "q", "d")))
+	must(os.Symlink("d/sub/../a.txt", filepath.Join(src, "p", "q", "via")))
+	dir, cleanup, err := Copy(src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	got, err := os.Readlink(filepath.Join(dir, "p", "q", "via"))
+	if err != nil || got != "../../a.txt" {
+		t.Errorf("p/q/via = %q, %v; want ../../a.txt", got, err)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "p", "q", "via")); err != nil || string(data) != "alpha\n" {
+		t.Errorf("reading p/q/via in the copy: %q, %v", data, err)
+	}
+}
+
+func TestCopySanitizesEveryGitFolder(t *testing.T) {
+	src, _ := tree(t)
+	remote := "[core]\n\tworktree = /real/checkout\n\tbare = false\n[remote \"origin\"]\n\turl = git@example.invalid:x.git\n"
+	write := func(rel, data string) {
+		t.Helper()
+		p := filepath.Join(src, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(".git/config", remote)
+	write(".git/config.worktree", remote)
+	write(".git/modules/lib/config", remote)
+	write("vendor/dep/.git/config", remote)
+	write(".git/commondir", "/real/repo/.git\n")
+	write(".git/worktrees/w/gitdir", "/real/checkout/.git\n")
+	write(".git/objects/info/alternates", "/real/repo/.git/objects\n")
+	// A config that is a symlink to a file inside the folder.
+	write("shared.gitconfig", remote)
+	if err := os.Symlink("../../shared.gitconfig", filepath.Join(src, ".git", "modules", "config")); err != nil {
+		t.Fatal(err)
+	}
+
+	dir, cleanup, err := Copy(src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	for _, rel := range []string{".git/config", ".git/config.worktree", ".git/modules/lib/config", "vendor/dep/.git/config", ".git/modules/config"} {
+		p := filepath.Join(dir, rel)
+		fi, err := os.Lstat(p)
+		if err != nil {
+			t.Errorf("%s missing: %v", rel, err)
+			continue
+		}
+		if !fi.Mode().IsRegular() {
+			t.Errorf("%s is not a regular file in the copy", rel)
+		}
+		data, _ := os.ReadFile(p)
+		if strings.Contains(string(data), "remote") || strings.Contains(string(data), "worktree") {
+			t.Errorf("%s still points outside:\n%s", rel, data)
+		}
+		if !strings.Contains(string(data), "bare = false") {
+			t.Errorf("%s lost its other settings:\n%s", rel, data)
+		}
+	}
+	for _, rel := range []string{".git/commondir", ".git/worktrees/w/gitdir", ".git/objects/info/alternates"} {
+		if _, err := os.Lstat(filepath.Join(dir, rel)); !os.IsNotExist(err) {
+			t.Errorf("%s was copied; it points git outside the copy", rel)
+		}
+	}
+	// Files outside .git folders are copied as they are.
+	if data, _ := os.ReadFile(filepath.Join(dir, "shared.gitconfig")); string(data) != remote {
+		t.Errorf("shared.gitconfig outside .git changed: %q", data)
 	}
 }

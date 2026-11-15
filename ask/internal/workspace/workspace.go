@@ -101,12 +101,13 @@ func Copy(src string, limits Limits) (dir string, cleanup func(), err error) {
 			if err != nil {
 				return err
 			}
-			if !linkStaysInside(p, link, srcReal, filepath.Dir(rel)) {
+			canon, ok := insideLink(p, link, srcReal, filepath.Dir(rel))
+			if !ok {
 				// A tool writing through it would change files outside
 				// the copy, which the fingerprint cannot see.
 				return nil
 			}
-			return os.Symlink(link, target)
+			return os.Symlink(canon, target)
 		case d.Type().IsRegular():
 			n, err := copyFile(p, target, info.Mode().Perm(), limits.MaxBytes-bytes)
 			bytes += n
@@ -121,7 +122,7 @@ func Copy(src string, limits Limits) (dir string, cleanup func(), err error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("copy %s: %w", filepath.Base(src), err)
 	}
-	if err = stripGitConfig(filepath.Join(dst, ".git", "config")); err != nil {
+	if err = sanitizeGit(dst); err != nil {
 		return "", nil, fmt.Errorf("copy %s: %w", filepath.Base(src), err)
 	}
 	// Set folder modes deepest first, so a read-only folder does not block
@@ -143,8 +144,65 @@ var gitSectionsDropped = map[string]bool{
 	"remote": true, "url": true, "credential": true, "include": true, "includeif": true,
 }
 
+// gitPointerFiles name files inside a git folder that point git at
+// another repository or checkout; they are removed from a copy.
+var gitPointerFiles = map[string]bool{"commondir": true, "gitdir": true}
+
+// sanitizeGit cleans every git folder in the copy at dst, at any depth:
+// submodules, nested repositories and worktree data included. Each config
+// and config.worktree loses the sections in gitSectionsDropped and its
+// core.worktree; one that is a symlink becomes a cleaned regular file.
+// commondir, gitdir and objects/info/alternates are removed, since they
+// point git outside the copy.
+func sanitizeGit(dst string) error {
+	return filepath.WalkDir(dst, func(p string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			return werr
+		}
+		rel, err := filepath.Rel(dst, p)
+		if err != nil || d.IsDir() || !inGitFolder(rel) {
+			return err
+		}
+		name := d.Name()
+		switch {
+		case gitPointerFiles[name], strings.HasSuffix(filepath.ToSlash(rel), "objects/info/alternates"):
+			return os.Remove(p)
+		case name == "config" || name == "config.worktree":
+			if d.Type()&fs.ModeSymlink != 0 {
+				// The link resolves inside the copy (Copy keeps no
+				// other kind); replace it with a cleaned file.
+				data, err := os.ReadFile(p)
+				if err := os.Remove(p); err != nil {
+					return err
+				}
+				if err != nil {
+					return nil
+				}
+				if err := os.WriteFile(p, data, 0o644); err != nil {
+					return err
+				}
+			}
+			return stripGitConfig(p)
+		}
+		return nil
+	})
+}
+
+// inGitFolder reports whether the relative path rel lies inside a folder
+// named .git.
+func inGitFolder(rel string) bool {
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	for _, part := range parts[:len(parts)-1] {
+		if part == ".git" {
+			return true
+		}
+	}
+	return false
+}
+
 // stripGitConfig rewrites the git config at path, when it is a regular
-// file, without the sections in gitSectionsDropped. Section names match
+// file, without the sections in gitSectionsDropped and without
+// core.worktree. Section names match
 // in any case, in both the [remote "x"] and the older [remote.x] forms.
 func stripGitConfig(path string) error {
 	fi, err := os.Lstat(path)
@@ -160,13 +218,19 @@ func stripGitConfig(path string) error {
 	}
 	var kept []string
 	drop := false
+	section := ""
 	for _, line := range strings.SplitAfter(string(data), "\n") {
-		if t := strings.TrimSpace(line); strings.HasPrefix(t, "[") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "[") {
 			name := strings.TrimLeft(t, "[")
 			if i := strings.IndexAny(name, " \t\".]"); i >= 0 {
 				name = name[:i]
 			}
-			drop = gitSectionsDropped[strings.ToLower(name)]
+			section = strings.ToLower(name)
+			drop = gitSectionsDropped[section]
+		} else if section == "core" && gitKey(t) == "worktree" {
+			// core.worktree points git at a checkout outside the copy.
+			continue
 		}
 		if !drop {
 			kept = append(kept, line)
@@ -175,46 +239,32 @@ func stripGitConfig(path string) error {
 	return os.WriteFile(path, []byte(strings.Join(kept, "")), fi.Mode().Perm())
 }
 
-// linkStaysInside reports whether the symlink at p, with target link, is
-// safe to copy. relDir is the folder holding the link, relative to the
-// source root. Three checks must all pass:
-//   - the target is relative;
-//   - read as text from relDir, no ".." step ever goes above the root, so
-//     the link cannot leave the folder and come back in by name (in the
-//     copy that climb would land somewhere else);
-//   - resolved through every link on the way, it ends inside srcReal,
-//     which catches a climb through a linked folder.
-//
+// insideLink decides whether the symlink at p, with target link, may be
+// copied, and returns the target to write in the copy. relDir is the
+// folder holding the link, relative to the source root. The link must be
+// relative and must resolve, through every link on the way, to a path
+// inside srcReal. The copy then gets the canonical relative path from the
+// link's real folder to that resolved path, never the original text, so
+// the link in the copy resolves exactly where the check looked.
 // Absolute links, dangling links and links that leave the folder fail.
-func linkStaysInside(p, link, srcReal, relDir string) bool {
+func insideLink(p, link, srcReal, relDir string) (string, bool) {
 	if filepath.IsAbs(link) {
-		return false
-	}
-	depth := 0
-	if relDir != "." {
-		depth = len(strings.Split(relDir, string(filepath.Separator)))
-	}
-	for _, part := range strings.Split(link, string(filepath.Separator)) {
-		switch part {
-		case "", ".":
-		case "..":
-			depth--
-			if depth < 0 {
-				return false
-			}
-		default:
-			depth++
-		}
+		return "", false
 	}
 	resolved, err := filepath.EvalSymlinks(p)
 	if err != nil {
-		return false
+		return "", false
 	}
-	rel, err := filepath.Rel(srcReal, resolved)
+	if rel, err := filepath.Rel(srcReal, resolved); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	// Folders the walk visits are real folders, so this is the link's
+	// real parent.
+	canon, err := filepath.Rel(filepath.Join(srcReal, relDir), resolved)
 	if err != nil {
-		return false
+		return "", false
 	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return canon, true
 }
 
 // copyFile copies a regular file and returns the bytes written. It fails
@@ -305,6 +355,19 @@ func hashFile(p string) (string, int64, error) {
 		return "", 0, err
 	}
 	return hex.EncodeToString(h.Sum(nil)), n, nil
+}
+
+// gitKey returns the lowercased key of a git config line such as
+// "worktree = /x", or "" for anything else.
+func gitKey(line string) string {
+	if line == "" || line[0] == '#' || line[0] == ';' {
+		return ""
+	}
+	key := line
+	if i := strings.IndexAny(key, " \t="); i >= 0 {
+		key = key[:i]
+	}
+	return strings.ToLower(key)
 }
 
 // Changed returns the paths, sorted, that were added, removed or differ
