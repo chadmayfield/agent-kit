@@ -101,6 +101,11 @@ func Copy(src string, limits Limits) (dir string, cleanup func(), err error) {
 			if err != nil {
 				return err
 			}
+			// A link named .git, or one inside a git folder, could point
+			// git at data the cleaner never sees.
+			if d.Name() == ".git" || inGitFolder(src, p) {
+				return nil
+			}
 			canon, ok := insideLink(p, link, srcReal, filepath.Dir(rel))
 			if !ok {
 				// A tool writing through it would change files outside
@@ -149,9 +154,9 @@ var gitSectionsDropped = map[string]bool{
 var gitPointerFiles = map[string]bool{"commondir": true, "gitdir": true}
 
 // sanitizeGit cleans every git folder in the copy at dst, at any depth:
-// submodules, nested repositories and worktree data included. Each config
+// submodules, nested and bare repositories, and worktree data included. Each config
 // and config.worktree loses the sections in gitSectionsDropped and its
-// core.worktree; one that is a symlink becomes a cleaned regular file.
+// core.worktree.
 // commondir, gitdir and objects/info/alternates are removed, since they
 // point git outside the copy.
 func sanitizeGit(dst string) error {
@@ -160,7 +165,7 @@ func sanitizeGit(dst string) error {
 			return werr
 		}
 		rel, err := filepath.Rel(dst, p)
-		if err != nil || d.IsDir() || !inGitFolder(rel) {
+		if err != nil || d.IsDir() || !inGitFolder(dst, p) {
 			return err
 		}
 		name := d.Name()
@@ -168,36 +173,47 @@ func sanitizeGit(dst string) error {
 		case gitPointerFiles[name], strings.HasSuffix(filepath.ToSlash(rel), "objects/info/alternates"):
 			return os.Remove(p)
 		case name == "config" || name == "config.worktree":
-			if d.Type()&fs.ModeSymlink != 0 {
-				// The link resolves inside the copy (Copy keeps no
-				// other kind); replace it with a cleaned file.
-				data, err := os.ReadFile(p)
-				if err := os.Remove(p); err != nil {
-					return err
-				}
-				if err != nil {
-					return nil
-				}
-				if err := os.WriteFile(p, data, 0o644); err != nil {
-					return err
-				}
-			}
+			// Copy leaves out every symlink inside a git folder, so this
+			// is a regular file.
 			return stripGitConfig(p)
 		}
 		return nil
 	})
 }
 
-// inGitFolder reports whether the relative path rel lies inside a folder
-// named .git.
-func inGitFolder(rel string) bool {
-	parts := strings.Split(filepath.ToSlash(rel), "/")
-	for _, part := range parts[:len(parts)-1] {
-		if part == ".git" {
+// inGitFolder reports whether p lies inside a git folder below root: a
+// folder named .git, or one that git would take for a repository because
+// it holds HEAD, objects/ and refs/ (a bare repository, say). Folders are
+// checked without following symlinks.
+func inGitFolder(root, p string) bool {
+	for dir := filepath.Dir(p); ; dir = filepath.Dir(dir) {
+		rel, err := filepath.Rel(root, dir)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return false
+		}
+		if filepath.Base(dir) == ".git" || looksLikeGitDir(dir) {
 			return true
 		}
+		if rel == "." {
+			return false
+		}
 	}
-	return false
+}
+
+// looksLikeGitDir reports whether dir holds a HEAD file and objects and
+// refs folders, without following symlinks.
+func looksLikeGitDir(dir string) bool {
+	head, err := os.Lstat(filepath.Join(dir, "HEAD"))
+	if err != nil || !head.Mode().IsRegular() {
+		return false
+	}
+	for _, sub := range []string{"objects", "refs"} {
+		fi, err := os.Lstat(filepath.Join(dir, sub))
+		if err != nil || !fi.IsDir() {
+			return false
+		}
+	}
+	return true
 }
 
 // stripGitConfig rewrites the git config at path, when it is a regular

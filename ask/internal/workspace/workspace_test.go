@@ -429,7 +429,8 @@ func TestCopySanitizesEveryGitFolder(t *testing.T) {
 	write(".git/commondir", "/real/repo/.git\n")
 	write(".git/worktrees/w/gitdir", "/real/checkout/.git\n")
 	write(".git/objects/info/alternates", "/real/repo/.git/objects\n")
-	// A config that is a symlink to a file inside the folder.
+	// A config that is a symlink, even to a file inside the folder, is
+	// left out like every symlink inside a git folder.
 	write("shared.gitconfig", remote)
 	if err := os.Symlink("../../shared.gitconfig", filepath.Join(src, ".git", "modules", "config")); err != nil {
 		t.Fatal(err)
@@ -440,7 +441,7 @@ func TestCopySanitizesEveryGitFolder(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cleanup()
-	for _, rel := range []string{".git/config", ".git/config.worktree", ".git/modules/lib/config", "vendor/dep/.git/config", ".git/modules/config"} {
+	for _, rel := range []string{".git/config", ".git/config.worktree", ".git/modules/lib/config", "vendor/dep/.git/config"} {
 		p := filepath.Join(dir, rel)
 		fi, err := os.Lstat(p)
 		if err != nil {
@@ -458,7 +459,7 @@ func TestCopySanitizesEveryGitFolder(t *testing.T) {
 			t.Errorf("%s lost its other settings:\n%s", rel, data)
 		}
 	}
-	for _, rel := range []string{".git/commondir", ".git/worktrees/w/gitdir", ".git/objects/info/alternates"} {
+	for _, rel := range []string{".git/commondir", ".git/worktrees/w/gitdir", ".git/objects/info/alternates", ".git/modules/config"} {
 		if _, err := os.Lstat(filepath.Join(dir, rel)); !os.IsNotExist(err) {
 			t.Errorf("%s was copied; it points git outside the copy", rel)
 		}
@@ -466,5 +467,79 @@ func TestCopySanitizesEveryGitFolder(t *testing.T) {
 	// Files outside .git folders are copied as they are.
 	if data, _ := os.ReadFile(filepath.Join(dir, "shared.gitconfig")); string(data) != remote {
 		t.Errorf("shared.gitconfig outside .git changed: %q", data)
+	}
+}
+
+// gitDirAt makes a minimal git folder at rel: HEAD, objects/, refs/ and a
+// config with a remote.
+func gitDirAt(t *testing.T, root, rel string) {
+	t.Helper()
+	base := filepath.Join(root, rel)
+	for _, d := range []string{"objects", "refs"} {
+		if err := os.MkdirAll(filepath.Join(base, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(base, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := "[core]\n\tbare = false\n[remote \"origin\"]\n\turl = git@example.invalid:x.git\n"
+	if err := os.WriteFile(filepath.Join(base, "config"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCopyHandlesGitFoldersByContent(t *testing.T) {
+	src, _ := tree(t)
+	if err := os.RemoveAll(filepath.Join(src, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	// .git is a symlink to a git folder with another name.
+	gitDirAt(t, src, "repo-data")
+	if err := os.Symlink("repo-data", filepath.Join(src, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	// A bare repository fixture, and a symlinked folder inside it.
+	gitDirAt(t, src, "fixtures/server.git")
+	if err := os.MkdirAll(filepath.Join(src, "mods"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../../mods", filepath.Join(src, "fixtures", "server.git", "modules")); err != nil {
+		t.Fatal(err)
+	}
+
+	dir, cleanup, err := Copy(src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if _, err := os.Lstat(filepath.Join(dir, ".git")); !os.IsNotExist(err) {
+		t.Errorf("a .git symlink was copied: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "fixtures", "server.git", "modules")); !os.IsNotExist(err) {
+		t.Errorf("a symlink inside a git folder was copied: %v", err)
+	}
+	for _, rel := range []string{"repo-data/config", "fixtures/server.git/config"} {
+		data, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil {
+			t.Errorf("%s: %v", rel, err)
+			continue
+		}
+		if strings.Contains(string(data), "remote") {
+			t.Errorf("%s still has a remote:\n%s", rel, data)
+		}
+	}
+	// A plain folder that only has a file named config is not a git
+	// folder and is copied as it is.
+	if err := os.WriteFile(filepath.Join(src, "sub", "config"), []byte("[remote \"x\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir2, cleanup2, err := Copy(src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup2()
+	if data, _ := os.ReadFile(filepath.Join(dir2, "sub", "config")); string(data) != "[remote \"x\"]\n" {
+		t.Errorf("a non-git config was changed: %q", data)
 	}
 }
