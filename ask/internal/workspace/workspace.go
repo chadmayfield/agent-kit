@@ -112,13 +112,13 @@ func Copy(ctx context.Context, src string, limits Limits) (dir string, cleanup f
 		// older files for push destinations; a reviewer needs none of
 		// them. Names match in any case, as git finds them on a
 		// case-insensitive file system.
-		if d.IsDir() && gitDropDirs[strings.ToLower(d.Name())] && isGitDir(filepath.Dir(p)) {
+		if d.IsDir() && foldsToAny(d.Name(), gitDropDirs) && isGitDir(filepath.Dir(p)) {
 			return fs.SkipDir
 		}
 		// agy runs the hooks, plugins and MCP servers a folder's .agents
 		// config names, even in a folder it does not trust; a link by that
 		// name could point it at another folder in the tree.
-		if rel != "." && agentConfigNames[strings.ToLower(d.Name())] {
+		if rel != "." && foldsToAny(d.Name(), agentConfigNames) {
 			if d.IsDir() {
 				return fs.SkipDir
 			}
@@ -250,12 +250,35 @@ func isDotGit(name string) bool {
 
 // agentConfigNames are agy's per-folder config folders, .agents and the
 // older .agent, left out of a copy at any depth, in any case.
-var agentConfigNames = map[string]bool{".agents": true, ".agent": true}
+var agentConfigNames = []string{".agents", ".agent"}
 
 // gitDropDirs are folders left out when they sit directly in a git
 // folder: hooks, and the legacy push destinations remotes and branches.
 // refs/remotes is deeper and stays.
-var gitDropDirs = map[string]bool{"hooks": true, "remotes": true, "branches": true}
+var gitDropDirs = []string{"hooks", "remotes", "branches"}
+
+// foldsToAny reports whether name equals one of names under Unicode case
+// folding, so "hookſ" (long s) matches "hooks", as a case-insensitive
+// disk may treat it. strings.ToLower would miss it.
+func foldsToAny(name string, names []string) bool {
+	for _, n := range names {
+		if strings.EqualFold(name, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// isAlternates reports whether rel ends in objects/info/alternates, matched
+// with Unicode case folding.
+func isAlternates(rel string) bool {
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if len(parts) < 3 {
+		return false
+	}
+	tail := parts[len(parts)-3:]
+	return strings.EqualFold(tail[0], "objects") && strings.EqualFold(tail[1], "info") && strings.EqualFold(tail[2], "alternates")
+}
 
 // isGitDir reports whether dir itself is a git folder: named .git in any
 // case, or holding git's files.
@@ -266,7 +289,7 @@ func isGitDir(dir string) bool {
 // gitPointerFiles name files inside a git folder that point git at
 // another repository or checkout; they are removed from a copy. Names are
 // matched in lower case.
-var gitPointerFiles = map[string]bool{"commondir": true, "gitdir": true}
+var gitPointerFiles = []string{"commondir", "gitdir"}
 
 // cleanGit cleans every git folder in the copy at dst, at any depth:
 // submodules, nested, bare and worktree git folders included. Each config
@@ -296,12 +319,12 @@ func cleanGit(ctx context.Context, dst string) error {
 			return nil
 		}
 		// Git reaches these names in any case on a case-insensitive file
-		// system, so they are matched in lower case.
-		name := strings.ToLower(d.Name())
+		// system, so they are matched with Unicode case folding.
+		name := d.Name()
 		switch {
-		case gitPointerFiles[name], strings.HasSuffix(strings.ToLower(filepath.ToSlash(rel)), "objects/info/alternates"):
+		case foldsToAny(name, gitPointerFiles), isAlternates(rel):
 			actions = append(actions, action{p, rel, true})
-		case name == "config" || name == "config.worktree":
+		case foldsToAny(name, []string{"config", "config.worktree"}):
 			// Copy leaves out every symlink inside a git folder, so this
 			// is a regular file.
 			actions = append(actions, action{p, rel, false})

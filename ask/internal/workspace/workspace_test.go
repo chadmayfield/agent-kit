@@ -1031,3 +1031,30 @@ func TestCopyLeavesOutAgentConfig(t *testing.T) {
 		t.Errorf("an ordinary folder was left out: %v", err)
 	}
 }
+
+// Names that only fold to a left-out name under Unicode case folding, as a
+// case-insensitive disk may treat them, are left out too.
+func TestCopyLeavesOutCaseFoldedNames(t *testing.T) {
+	src, _ := tree(t)
+	agents := filepath.Join(src, "a", ".agent\u017f", "hooks.json") // long s
+	hook := filepath.Join(src, ".git", "hook\u017f", "pre-commit")
+	alt := filepath.Join(src, ".git", "objects", "info", "alternate\u017f")
+	for _, p := range []string{agents, hook, alt} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	for _, rel := range []string{"a/.agent\u017f", ".git/hook\u017f", ".git/objects/info/alternate\u017f"} {
+		if _, err := os.Lstat(filepath.Join(dir, rel)); !os.IsNotExist(err) {
+			t.Errorf("%q was copied", rel)
+		}
+	}
+}
