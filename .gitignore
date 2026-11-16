@@ -1,0 +1,5 @@
+# Scratch folders that coding-agent plan runs create in the repo.
+.superpowers/
+
+# The binary `go build ./cmd/ask` writes when run in ask/.
+/ask/ask
