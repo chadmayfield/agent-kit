@@ -46,6 +46,9 @@ var ErrTooLarge = errors.New("the folder is too large to review in a copy")
 // objects/info/alternates are removed. Git folders are found by the name
 // .git in any case, or by their contents.
 //
+// Entries named .agents or .agent, in any case, are left out: agy runs the
+// hooks, plugins and MCP servers they name.
+//
 // Over a limit, Copy fails with an error wrapping ErrTooLarge. When ctx is
 // done, it stops. Either way it removes what it made. Errors name paths
 // relative to src.
@@ -111,6 +114,15 @@ func Copy(ctx context.Context, src string, limits Limits) (dir string, cleanup f
 		// case-insensitive file system.
 		if d.IsDir() && gitDropDirs[strings.ToLower(d.Name())] && isGitDir(filepath.Dir(p)) {
 			return fs.SkipDir
+		}
+		// agy runs the hooks, plugins and MCP servers a folder's .agents
+		// config names, even in a folder it does not trust; a link by that
+		// name could point it at another folder in the tree.
+		if rel != "." && agentConfigNames[strings.ToLower(d.Name())] {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		if rel != "." {
 			files++
@@ -235,6 +247,10 @@ func relErr(err error) error {
 func isDotGit(name string) bool {
 	return strings.EqualFold(name, ".git")
 }
+
+// agentConfigNames are agy's per-folder config folders, .agents and the
+// older .agent, left out of a copy at any depth, in any case.
+var agentConfigNames = map[string]bool{".agents": true, ".agent": true}
 
 // gitDropDirs are folders left out when they sit directly in a git
 // folder: hooks, and the legacy push destinations remotes and branches.
