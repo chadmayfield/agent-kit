@@ -9,9 +9,9 @@ read-only claude run.
 
 | Tool | Tested version | Result |
 |---|---|---|
-| claude | `2.1.319 (Claude Code)` | PASS, with both `--safe-mode` and `--restricted` |
+| claude | `2.1.325 (Claude Code)` | PASS (2026-11-15), with both `--safe-mode` and `--restricted` |
 | codex | `codex-cli 0.163.0` | PASS (2026-11-15) |
-| agy | none | not tested |
+| agy | `1.5.9` | FAIL (2026-11-15): hooks and MCP servers load |
 | opencode | none | not tested |
 
 A verified setup counts for every version with the same major number as
@@ -25,10 +25,9 @@ Within a major version, a guard checks every read-only claude run instead
 of a new test per release. See [The guard](#the-guard).
 
 On 2026-11-15, five read-only haiku runs on `2.1.325 (Claude Code)`
-passed the guard with exit 0. The last three ran against the guard as it
-stands now: a short reply, a run that used Grep and Read, and a run that
-used Glob. That shows the guard accepts real claude output on that
-version. It is not the full trap test, which last ran on 2.1.319.
+passed the guard with exit 0: a short reply, a run that used Grep and
+Read, and a run that used Glob among them. The full trap test passed on
+that version the same day.
 
 ### claude
 
@@ -38,7 +37,23 @@ The read-only argv is:
 claude -p --output-format stream-json --verbose --model <model> --safe-mode --restricted --strict-mcp-config --no-chrome --tools Read,Grep,Glob --include-hook-events
 ```
 
-The prompt goes on stdin. The 2.1.319 test ran with
+The prompt goes on stdin.
+
+The 2.1.325 test (2026-11-15) ran claude with a scratch config folder
+(`CLAUDE_CONFIG_DIR`), so the real `~/.claude` was never edited. A scratch
+folder loses the keychain login, so these runs used an API key instead.
+The traps were hooks at `SessionStart` and `PreToolUse` in the user
+settings, the project settings, the local project settings and a plugin
+installed from a local marketplace, plus a stub MCP server at user and at
+project scope. The control run (no read-only flags, permissions bypassed)
+fired all ten traps, deleted the canary file, created the new file and
+wrote the file outside the folder. Two runs with the read-only argv fired
+none of them: the start event listed only Glob, Grep and Read, no MCP
+servers and not the trap plugin; no file changed; claude exited 0 with the
+agreed token. claude also lists four `cc-plugin-*` plugins of its own in
+both modes; in read-only mode they added no tool, hook or MCP server.
+
+The 2.1.319 test ran with
 `--no-session-persistence` and without `--include-hook-events`. `ask` now
 lets claude save the session so usage trackers count it, and asks for hook
 events so the guard can see them. Neither flag changes which tools, hooks
@@ -143,11 +158,42 @@ The shape of claude's hook events was not checked against a live run. The
 guard matches any type or subtype that contains `hook`, so a different name
 for those events would slip past only if it left out that word.
 
-### agy and opencode
+### agy
 
-Read-only is not tested for either, so both refuse read-only runs. Both
-run with `--write`: `ask` passes the prompt in a private temp file with a
-fixed instruction to follow it.
+The read-only candidate argv is:
+
+```
+agy --print <instruction> --output-format json --model <model> --sandbox --mode plan
+```
+
+agy `1.5.9` failed on 2026-11-15. A scratch `HOME` loses agy's login, so
+the test used the real agy config: it installed a trap plugin (hooks at
+`PreToolUse` and `PostToolUse`, and a stub MCP server) and a user-scope
+stub MCP server, then removed them and compared the config with a backup.
+The work folder held a project `.agents/hooks.json`, a project plugin in
+`.agents/plugins/` and a stub server in `.agents/mcp_config.json`. The
+folder was not one of agy's trusted workspaces.
+
+Under the candidate argv, every trap hook ran (user plugin, project hooks
+and project plugin) and all three stub servers started. agy wrote a plan
+to its own state folder and changed no file in the work folder. Hooks and
+MCP servers that load fail the rule, so agy has no verified read-only
+setup and `ask agy` needs `--write`.
+
+The control run did not reach the file check: `--mode auto` is not
+available on the tested account, and the default mode refused to read a
+prompt file outside the work folder in a headless run.
+
+`ask review` runs agy in a copy that leaves out `.agents` and `.agent`
+entries, so a reviewed repository cannot add hooks or servers. agy still
+loads the plugins and MCP servers in the user's own agy config.
+
+### opencode
+
+Read-only is not tested, so `ask opencode` needs `--write`.
+
+agy and opencode both run with `--write`: `ask` passes the prompt in a
+private temp file with a fixed instruction to follow it.
 
 ## Method
 

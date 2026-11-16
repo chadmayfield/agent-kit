@@ -996,3 +996,38 @@ func TestCopySkipsEntriesThatVanish(t *testing.T) {
 		t.Errorf("other files were not copied: %v", err)
 	}
 }
+
+// agy runs hooks, plugins and MCP servers from a folder's .agents config,
+// even in a folder it does not trust, so a review copy leaves it out.
+func TestCopyLeavesOutAgentConfig(t *testing.T) {
+	src, _ := tree(t)
+	for _, rel := range []string{".agents/hooks.json", ".AGENTS/plugins/p/hooks.json", "sub/.agents/mcp_config.json", ".agent/workflows/w.md", "cfg/hooks.json"} {
+		p := filepath.Join(src, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A link by that name to a folder inside the tree is left out too.
+	if err := os.Mkdir(filepath.Join(src, "link"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../cfg", filepath.Join(src, "link", ".Agents")); err != nil {
+		t.Fatal(err)
+	}
+	dir, cleanup, err := Copy(context.Background(), src, noLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cleanup() }()
+	for _, rel := range []string{".agents", ".AGENTS", "sub/.agents", "link/.Agents", ".agent"} {
+		if _, err := os.Lstat(filepath.Join(dir, rel)); !os.IsNotExist(err) {
+			t.Errorf("%s was copied", rel)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cfg", "hooks.json")); err != nil {
+		t.Errorf("an ordinary folder was left out: %v", err)
+	}
+}

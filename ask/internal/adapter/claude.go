@@ -27,7 +27,7 @@ func (claude) Efforts() []string { return slices.Clone(claudeEfforts) }
 // claudeLastTested is the trimmed `claude --version` output of the install
 // where the read-only setup last passed its full test. Every version with
 // the same major number runs read-only, and claudeGuard checks each run.
-const claudeLastTested = "2.1.319 (Claude Code)"
+const claudeLastTested = "2.1.325 (Claude Code)"
 
 // ReadOnly is verified for the major version of claudeLastTested. The
 // read-only argv needs both --safe-mode and --restricted. See

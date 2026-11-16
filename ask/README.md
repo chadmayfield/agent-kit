@@ -150,10 +150,10 @@ ask claude haiku --verbose --timeout 5m "Summarize the README."
 |---|---|---|
 | claude | Runs on any `2.x.x` version, with a guard on each run. | Runs. |
 | codex | Runs on any `0.163.x` version. | Runs. |
-| agy | Refused. Its read-only setup is not tested. | Runs. |
+| agy | Refused. Its read-only test failed: hooks and MCP servers load. | Runs. |
 | opencode | Refused. It has no read-only setup. | Runs. |
 
-claude read-only passed its test on `2.1.319 (Claude Code)`. `ask` runs
+claude read-only passed its test on `2.1.325 (Claude Code)`. `ask` runs
 `claude --version` before each read-only run and accepts any version with
 the same major number, 2. A `3.x.x` release is refused until it passes the
 same test. `--write` runs do not check the version.
@@ -201,7 +201,7 @@ Read-only is the default. `--write` turns it off.
 |---|---|---|
 | claude | Only the Read, Grep and Glob tools. No hooks, no MCP servers, no browser tools. The session is saved under `~/.claude/projects` like any other. Your user settings and the repo's `CLAUDE.md` are not loaded. | `--permission-mode acceptEdits`: claude may edit files in the working folder. claude runs without `--safe-mode`, so your user settings load, and `ask` does not turn off hooks or MCP servers. |
 | codex | The `read-only` sandbox, with your user config and rules files skipped. Hooks, MCP servers and file writes stay off; user skills still load. | The `workspace-write` sandbox. Your user config and rules load. |
-| agy | Refused. The setup is not tested. | Runs with `--mode accept-edits`. |
+| agy | Refused. Its read-only test failed. | Runs with `--mode accept-edits`. |
 | opencode | Refused. `ask` has no read-only setup for it. | Runs `opencode run` with `--auto`. |
 
 What changes between the two modes in `ask` itself:
@@ -469,6 +469,12 @@ What goes into the copy:
   `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, so your
   global and system git config do not apply. Together, git in the copy
   has no configured remote to push to and runs no configured commands.
+- Folders and links named `.agents` or `.agent`, in any case and at any
+  depth, are left out. agy runs the hooks, plugins and MCP servers they
+  name, even in a folder it does not trust, so a reviewed repository could
+  otherwise run its own commands. agy still loads the plugins and MCP
+  servers in your own agy config; see
+  [docs/read-only-tests.md](docs/read-only-tests.md#agy).
 - A folder over 512 MiB or 50,000 entries is refused for that tool with
   exit 2. Other copy failures, such as an unreadable file, fail that tool
   with exit 3. Messages name paths relative to the folder.
