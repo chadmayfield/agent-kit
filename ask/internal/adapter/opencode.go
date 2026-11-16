@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/chadmayfield/agent-kit/ask/internal/config"
 	"github.com/chadmayfield/agent-kit/ask/internal/runner"
@@ -69,6 +70,7 @@ func (o *opencode) Build(req Request, tc config.ToolConfig) (runner.Invocation, 
 func (o *opencode) Parse(stdout []byte) (Result, error) {
 	var res Result
 	var lines, parsed int
+	var toolErr *ToolError
 	for _, line := range bytes.Split(stdout, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
@@ -76,8 +78,9 @@ func (o *opencode) Parse(stdout []byte) (Result, error) {
 		}
 		lines++
 		var ev struct {
-			Type string `json:"type"`
-			Part *struct {
+			Type  string              `json:"type"`
+			Error *opencodeErrorEvent `json:"error"`
+			Part  *struct {
 				Text   string `json:"text"`
 				Tokens *struct {
 					Input  int `json:"input"`
@@ -89,6 +92,9 @@ func (o *opencode) Parse(stdout []byte) (Result, error) {
 			continue
 		}
 		parsed++
+		if ev.Type == "error" && toolErr == nil {
+			toolErr = opencodeError(ev.Error)
+		}
 		if ev.Part == nil {
 			continue
 		}
@@ -103,5 +109,44 @@ func (o *opencode) Parse(stdout []byte) (Result, error) {
 	if lines > 0 && parsed == 0 {
 		return Result{}, errors.New("opencode: output is not JSON lines")
 	}
+	// An error opencode recovered from, such as a retried rate limit, does
+	// not fail a run that still answered.
+	if toolErr != nil && res.Final == "" {
+		return res, toolErr
+	}
 	return res, nil
+}
+
+// opencodeErrorEvent is the error field of an opencode "error" event.
+type opencodeErrorEvent struct {
+	Type   string `json:"type"`
+	Status int    `json:"status"`
+}
+
+// opencodeError describes an opencode error event from its type and status
+// only. The message text may hold anything, so it is never shown.
+func opencodeError(e *opencodeErrorEvent) *ToolError {
+	if e == nil || !plainName(e.Type) {
+		return &ToolError{Msg: "opencode reported an error"}
+	}
+	msg := "opencode reported a " + e.Type + " error"
+	if e.Status >= 100 && e.Status <= 599 {
+		msg += fmt.Sprintf(" (status %d)", e.Status)
+	}
+	return &ToolError{Msg: msg}
+}
+
+// plainName reports whether s is a short name made of letters, digits,
+// dots, underscores and dashes, such as "provider.auth".
+func plainName(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-'
+		if !ok {
+			return false
+		}
+	}
+	return true
 }

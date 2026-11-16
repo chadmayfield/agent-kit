@@ -537,8 +537,9 @@ does not show:
 - For agy and opencode it shows as `<prompt: N bytes, in a temp file>`.
   The temp file path in the line no longer exists: `ask` writes the file
   to build the command, then removes it before it exits.
-- Without `--write`, stderr also gets `read-only: verified for "<version>"`
-  or `read-only: not verified`. A dry run does not run the version check,
+- Without `--write`, stderr also gets `read-only: verified for <range> (last
+  tested "<version>")`, where the range is `2.x` or, for a 0.x tool,
+  `0.163.x`, or `read-only: not verified`. A dry run does not run the version check,
   so it may print a command that a real run would refuse.
 
 A dry run looks up no secrets, writes no report and adds no log line.
@@ -787,10 +788,12 @@ Each message below appears on stderr after `ask: `.
   The tool has no verified read-only setup. Add `--write` if the tool may
   edit files, or use claude for a read-only run.
 
-- `<tool> version "<found>" is not the tested major version (last tested: "<tested>"); read-only is refused until the test in ask/docs/read-only-tests.md passes on it`
+- `<tool> version "<found>" is outside the tested range <range> (last tested "<tested>"); read-only is refused until the test in ask/docs/read-only-tests.md passes on it`
 
-  The installed claude has a different major version from the one its
-  read-only setup was tested on. Use `--write` until the test in
+  The installed tool is outside the versions its read-only setup was
+  tested on. The range is the tested major version, such as `2.x`, or for
+  a 0.x tool the major and minor version, such as `0.163.x`. Use
+  `--write` until the test in
   [docs/read-only-tests.md](docs/read-only-tests.md) passes on the new
   version.
 
@@ -938,6 +941,14 @@ Each message below appears on stderr after `ask: `.
 - `<tool> exited with status N`
 
   The tool failed. Run again with `--verbose` to see the end of its stderr.
+
+- `opencode exited with status N: opencode reported a <type> error (status <code>)`
+
+  opencode writes its errors to stdout, not stderr. `ask` shows the error
+  type and status code from it, such as `provider.auth` and 401 for a
+  missing or wrong API key, but not opencode's message text. A
+  `provider.auth` error usually means the config does not pass the key
+  opencode needs; check its `secrets` entries.
 
 - `no final message`
 

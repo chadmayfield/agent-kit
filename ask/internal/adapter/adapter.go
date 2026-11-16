@@ -73,6 +73,32 @@ func (v Verification) Covers(version string) bool {
 	return ok && gotMinor == wantMinor
 }
 
+// Range names the versions the test counts for, such as "2.x" for
+// "2.1.319 (Claude Code)" or "0.163.x" for "codex-cli 0.163.0".
+func (v Verification) Range() string {
+	major, ok := MajorVersion(v.LastTested)
+	if !ok {
+		return "the tested version"
+	}
+	if major != 0 {
+		return fmt.Sprintf("%d.x", major)
+	}
+	minor, ok := minorVersion(v.LastTested)
+	if !ok {
+		return "the tested version"
+	}
+	return fmt.Sprintf("0.%d.x", minor)
+}
+
+// ToolError is an error the tool reported in its own output, such as a
+// failed login. Msg is built by ask from fixed words and checked fields,
+// never copied from the tool's free text, so it is safe to print.
+type ToolError struct {
+	Msg string
+}
+
+func (e *ToolError) Error() string { return e.Msg }
+
 // minorVersion returns the minor number of the versions in s, failing
 // when they disagree.
 func minorVersion(s string) (int, bool) {

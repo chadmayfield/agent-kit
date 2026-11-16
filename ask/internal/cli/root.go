@@ -394,7 +394,7 @@ func checkReadOnly(a adapter.Adapter, tool, bin string, version func(string) (st
 		return adapter.Refuse("cannot read the %s version, so its read-only test does not apply", tool)
 	}
 	if !ro.Covers(ver) {
-		return adapter.Refuse("%s version %q is not the tested major version (last tested: %q); read-only is refused until the test in ask/docs/read-only-tests.md passes on it", tool, ver, ro.LastTested)
+		return adapter.Refuse("%s version %q is outside the tested range %s (last tested %q); read-only is refused until the test in ask/docs/read-only-tests.md passes on it", tool, ver, ro.Range(), ro.LastTested)
 	}
 	return nil
 }
@@ -677,7 +677,7 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 		if o.dryRun {
 			// A dry run starts nothing, not even `--version`.
 			if ro := a.ReadOnly(); ro.OK {
-				fmt.Fprintf(d.Stderr, "read-only: verified for the major version of %q\n", ro.LastTested)
+				fmt.Fprintf(d.Stderr, "read-only: verified for %s (last tested %q)\n", ro.Range(), ro.LastTested)
 			} else {
 				fmt.Fprintln(d.Stderr, "read-only: not verified")
 			}
@@ -836,6 +836,10 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 		code, runErr = exitSignalBase+out.Signal, fmt.Errorf("%s was killed by signal %d", tool, out.Signal)
 	case out.ExitCode != 0:
 		code, runErr = ExitTool, fmt.Errorf("%s exited with status %d", tool, out.ExitCode)
+		var te *adapter.ToolError
+		if errors.As(parseErr, &te) {
+			runErr = fmt.Errorf("%s exited with status %d: %s", tool, out.ExitCode, te.Msg)
+		}
 	case parseErr != nil:
 		code, runErr = ExitTool, parseErr
 		if msg := parseErr.Error(); !strings.HasPrefix(msg, tool+":") && !strings.HasPrefix(msg, tool+" ") {

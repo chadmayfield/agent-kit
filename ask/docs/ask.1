@@ -124,7 +124,8 @@ Without
 .BR \-\-write ,
 .B ask
 runs a tool only if its read\-only setup passed its test on the installed
-major version, read from the trimmed output of
+major version (for a 0.x tool, the major and minor version), read from the
+trimmed output of
 .IB tool " \-\-version" .
 Otherwise it refuses with exit 2.
 A read\-only run gets only the secrets listed in
