@@ -435,3 +435,16 @@ func TestCoversMajorZeroNeedsMinor(t *testing.T) {
 		t.Error("from 1.x on, the major number alone decides")
 	}
 }
+
+func TestVerificationRange(t *testing.T) {
+	for tested, want := range map[string]string{
+		"2.1.319 (Claude Code)": "2.x",
+		"codex-cli 0.163.0":     "0.163.x",
+		"10.0":                  "10.x",
+		"no version here":       "the tested version",
+	} {
+		if got := (Verification{OK: true, LastTested: tested}).Range(); got != want {
+			t.Errorf("Range() for %q = %q, want %q", tested, got, want)
+		}
+	}
+}

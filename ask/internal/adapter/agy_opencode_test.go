@@ -478,3 +478,30 @@ func TestDryRunPromptInFile(t *testing.T) {
 		}
 	}
 }
+
+func TestOpencodeParseReportsToolError(t *testing.T) {
+	out := []byte(`{"type":"error","error":{"type":"provider.auth","message":"secret-ish text","status":401}}` + "\n")
+	_, err := NewOpencode().Parse(out)
+	var te *ToolError
+	if !errors.As(err, &te) {
+		t.Fatalf("err = %v, want a *ToolError", err)
+	}
+	if te.Msg != "opencode reported a provider.auth error (status 401)" {
+		t.Errorf("Msg = %q", te.Msg)
+	}
+	// An unexpected type value is not echoed.
+	out = []byte(`{"type":"error","error":{"type":"bad type; rm -rf","status":0}}` + "\n")
+	_, err = NewOpencode().Parse(out)
+	if !errors.As(err, &te) || te.Msg != "opencode reported an error" {
+		t.Errorf("odd type: %v", err)
+	}
+}
+
+func TestOpencodeParseKeepsAnswerAfterRecoveredError(t *testing.T) {
+	out := []byte(`{"type":"error","error":{"type":"provider.rate_limit","status":429}}` + "\n" +
+		`{"type":"text","part":{"text":"OK"}}` + "\n")
+	res, err := NewOpencode().Parse(out)
+	if err != nil || res.Final != "OK" {
+		t.Errorf("Parse = %q, %v; want the answer and no error", res.Final, err)
+	}
+}

@@ -702,7 +702,7 @@ func TestDryRunRunsNothing(t *testing.T) {
 	if out := f.out.String(); strings.Contains(out, "EXAMPLE_API_KEY") || !strings.Contains(out, "EXAMPLE_RO_TOKEN=<ro_key>") {
 		t.Errorf("read-only dry run %q", out)
 	}
-	if !strings.Contains(f.err.String(), `read-only: verified for the major version of "fake 1.0.0"`) {
+	if !strings.Contains(f.err.String(), `read-only: verified for 1.x (last tested "fake 1.0.0")`) {
 		t.Errorf("stderr %q lacks the gate status", f.err.String())
 	}
 
@@ -1667,5 +1667,36 @@ func TestClaudeFailureBeforeInitIsAnOrdinaryFailure(t *testing.T) {
 				t.Errorf("claude ran %d times, want 2 (one retry)", f.runs(t))
 			}
 		})
+	}
+}
+
+func TestRefusalNamesTheTestedRange(t *testing.T) {
+	f := newFake(t, `echo answer`, "", verified)
+	f.d.Version = func(string) (string, error) { return "fake 2.0.0", nil }
+	if code := run(t, f.d, "fake", "m", "hi"); code != 2 {
+		t.Fatalf("exit %d, want 2", code)
+	}
+	if !strings.Contains(f.err.String(), `version "fake 2.0.0" is outside the tested range 1.x (last tested "fake 1.0.0")`) {
+		t.Errorf("refusal %q does not name the range", f.err.String())
+	}
+}
+
+func TestToolReportedErrorIsShown(t *testing.T) {
+	f := newFake(t, `echo answer`, "", adapter.Verification{})
+	body := "#!/bin/sh\necho run >> \"$HOME/ran\"\n" +
+		`echo '{"type":"error","error":{"type":"provider.auth","message":"No cookie auth credentials found","status":401}}'` + "\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(f.home, "bin", "opencode"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.d.Adapters = map[string]adapter.Adapter{"opencode": adapter.NewOpencode()}
+	if code := run(t, f.d, "--write", "--no-report", "opencode", "m", "hi"); code != 1 {
+		t.Fatalf("exit %d, want 1", code)
+	}
+	got := f.err.String()
+	if !strings.Contains(got, "opencode exited with status 1: opencode reported a provider.auth error (status 401)") {
+		t.Errorf("stderr %q does not explain the failure", got)
+	}
+	if strings.Contains(got, "cookie") {
+		t.Errorf("stderr %q repeats the tool's free-text message", got)
 	}
 }
