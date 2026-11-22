@@ -188,6 +188,51 @@ prompt file outside the work folder in a headless run.
 entries, so a reviewed repository cannot add hooks or servers. agy still
 loads the plugins and MCP servers in the user's own agy config.
 
+#### Plan mode in reviews (2026-11-22, agy 1.5.14)
+
+The candidate argv is still what `ask review` runs. Two failures came from
+it with `gemini-4-hydrogen-high`, both read from agy's log
+(`~/.gemini/antigravity-cli/log/cli-*.log`) and its saved transcript:
+
+- agy ran a shell command to look around the folder. agy flagged it
+  (`unquoted_shell_operators`, then `unknown_command`), logged
+  `soft-denying tool confirmation "Bash"` and cancelled the run. `ask`
+  reported no final message.
+- `--mode plan` adds a `/plan` instruction: "create a detailed
+  implementation plan artifact, and get user approval on the plan". agy
+  wrote `implementation_plan.md` to
+  `~/.gemini/antigravity-cli/brain/<conversation_id>/` and ended by asking
+  for approval. Its JSON status was `SUCCESS`, so `ask` used to count the
+  plan as a review. A prompt line that only said not to use tools did not
+  stop it: agy's reasoning decided that plan artifacts are allowed during
+  planning.
+
+Earlier runs with the same argv, on agy 1.5.10 (2026-11-17) and 1.5.14
+(2026-11-21), answered directly, so the failure does not happen on every
+run.
+
+Two changes followed. A read-only agy prompt now starts with a note
+(`agyPlanNote` in `internal/adapter/agy.go`) that says the run cannot be
+approved, that the answer is the plan, and that shell commands end the run.
+A guard then checks, after agy exits 0, whether the run's conversation has
+an `implementation_plan.md`; if it does, the run fails with exit 1.
+
+Live checks on 2026-11-22, agy 1.5.14, `gemini-4-hydrogen-high`, all
+`ask review --agy ... --as adversarial` with one long Markdown document and
+six supporting Markdown files attached by `-f`:
+
+| Build | Folder (`-C`) | Runs | Full review | Plan or no answer |
+|---|---|---|---|---|
+| ask before this change | a folder with other files besides the attached ones | 2 | 0 | 2 (one cancelled shell command, one plan) |
+| ask before this change, with only "do not use tools" added to the prompt | a folder holding only the attached files | 1 | 0 | 1 (plan) |
+| ask before this change, with the note's wording added to the prompt by hand | a folder holding only the attached files | 1 | 1 | 0 |
+| this change | a folder with other files besides the attached ones | 3 | 3 | 0 |
+
+Each of the three runs took 4 to 4.5 minutes and gave 52k to 58k output
+tokens. The guard did not trip, so no run wrote a plan. Three runs show
+the note works on this agy version; they do not prove it always will,
+which is why the guard stays.
+
 ### opencode
 
 Read-only is not tested, so `ask opencode` needs `--write`.

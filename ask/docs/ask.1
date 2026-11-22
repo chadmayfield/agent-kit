@@ -356,6 +356,15 @@ Pass the files to review with
 .B \-f
 when agy is one of the tools: its read\-only mode refuses shell commands
 in a headless run, so it cannot read files with them.
+agy's read\-only setup runs it with
+.BR "\-\-mode plan" ,
+which tells it to write a plan and wait for approval.
+ask puts a note in front of agy's prompt that says the answer is the plan
+and rules out tools, so agy reviews only its prompt and the files attached
+with
+.BR \-f .
+ask fails the review with "agy wrote a plan instead of an answer" and the
+plan's path when agy writes one anyway.
 Every tool runs with its read\-only setup and read\-only secrets.
 A tool whose setup is verified runs in the real folder; any other runs in
 a private throwaway copy, and its review fails if the copy changed.

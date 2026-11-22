@@ -798,9 +798,14 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 		}
 		if out.GuardErr != nil {
 			// The answer of a run the guard stopped is not trusted. Its
-			// token counts stay, since they were spent.
+			// token counts stay, since they were spent. A run with no
+			// answer, such as an agy plan, is a failed run, not a guard
+			// stop, and is not retried.
 			final = ""
-			st.guard = out.GuardErr.Error()
+			var na *adapter.NoAnswerError
+			if !errors.As(out.GuardErr, &na) {
+				st.guard = out.GuardErr.Error()
+			}
 			break
 		}
 		stopped := out.TimedOut || out.Interrupted || out.Signal > 0
@@ -817,11 +822,14 @@ func runTool(d Deps, o options, args []string, st *runStats) error {
 	code := ExitOK
 	var runErr error
 	var ee *exitError
+	var noAnswer *adapter.NoAnswerError
 	switch {
 	case errors.As(early, &ee):
 		// A signal arrived between the first attempt and the retry.
 		code, runErr = ee.code, ee.err
 		final = ""
+	case errors.As(out.GuardErr, &noAnswer):
+		code, runErr = ExitTool, noAnswer
 	case out.GuardErr != nil:
 		code, runErr = ExitUsage, fmt.Errorf("read-only guard stopped %s and discarded its output: %v", tool, out.GuardErr)
 	case out.TimedOut:

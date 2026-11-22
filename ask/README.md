@@ -414,6 +414,16 @@ headless run, agy's read-only mode refuses shell commands, so an agy that
 tries to read a file with one gives no answer. With the text attached, it
 does not need to.
 
+agy's read-only setup runs it with `--mode plan`, which tells it to write a
+plan and wait for approval. A headless run cannot approve, so agy can end
+with a plan instead of a review. `ask` puts a short note in front of agy's
+prompt that tells it the answer is the plan and rules out shell commands
+and other tools. agy therefore reviews only the text of its prompt and the
+files attached with `-f`; it does not open other files in the folder.
+If agy still writes a plan, the review fails with `agy wrote a plan instead
+of an answer` and the plan's path. See
+[docs/read-only-tests.md](docs/read-only-tests.md#agy).
+
 | Flag | What it does |
 |---|---|
 | `--claude <model>`, `--codex <model>`, `--agy <model>` | Review with that tool and model. Short names from the tool's `models` map work. A tool without a model from a flag or from `review.models` in the config is left out. At least one is needed. |
@@ -972,6 +982,13 @@ Each message below appears on stderr after `ask: `.
 - `agy did not report success`
 
   agy exited 0, but its JSON output did not have status `SUCCESS`.
+
+- `agy wrote a plan instead of an answer: <path>`
+
+  A read-only agy run exited 0, but it wrote a plan for approval in
+  `~/.gemini/antigravity-cli/brain/<conversation>/implementation_plan.md`
+  instead of answering. The run fails with exit 1 and is not retried. Read
+  the plan at the path to see what agy meant to do.
 
 - An output that does not parse
 
