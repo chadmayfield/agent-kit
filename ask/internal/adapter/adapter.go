@@ -99,6 +99,17 @@ type ToolError struct {
 
 func (e *ToolError) Error() string { return e.Msg }
 
+// NoAnswerError means the tool exited 0 but gave no answer, for example
+// agy writing a plan and waiting for an approval that a --print run cannot
+// give. A Guard's End returns it. ask counts the run as a failed run, not
+// as a read-only guard stop. Msg is built by ask, never copied from the
+// tool's output.
+type NoAnswerError struct {
+	Msg string
+}
+
+func (e *NoAnswerError) Error() string { return e.Msg }
+
 // minorVersion returns the minor number of the versions in s, failing
 // when they disagree.
 func minorVersion(s string) (int, bool) {

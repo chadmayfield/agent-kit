@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
 
 	"github.com/chadmayfield/agent-kit/ask/internal/config"
@@ -19,6 +22,73 @@ type agy struct {
 
 // agyMessage is the --print value. %s is the prompt file path.
 const agyMessage = "Read the file %s and follow the instructions in it."
+
+// agyPlanNote goes in front of the prompt of a read-only run. Read-only
+// runs use --mode plan, which adds a /plan instruction to write a plan and
+// wait for approval. A --print run cannot approve anything, and on
+// 2026-11-22 agy 1.5.14 often ended with a plan instead of an answer, even
+// when the prompt said not to use tools. Naming the /plan instruction and
+// saying the answer is the plan fixed it in a live run. Shell commands
+// outside agy's allow-list are soft-denied, which ends a --print run with no
+// answer, so the note also rules them out.
+const agyPlanNote = `IMPORTANT FOR THIS RUN, read before anything else:
+1. This is a single, non-interactive run. No one can read a plan, answer a question or approve anything, so a run that ends with a plan or a request for approval has failed.
+2. This session starts with a /plan instruction. For this task, your answer itself is the plan. Do not create implementation_plan.md, a walkthrough or any other artifact, and do not ask for approval. Write your complete answer as your final response text.
+3. Apart from this file, do not run any shell command or use any other tool. Such calls are refused in this session and end the run with no answer. Work only from the text in this file, which includes any files attached to the request.`
+
+// agyConversationID matches the conversation_id agy prints, a UUID. Only
+// a match is used in a path.
+var agyConversationID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// agyPlanPath is where agy keeps the plan a conversation wrote. agy 1.5.9
+// and 1.5.14 both wrote plans there.
+func agyPlanPath(home, id string) string {
+	return filepath.Join(home, ".gemini", "antigravity-cli", "brain", id, "implementation_plan.md")
+}
+
+// maxAgyPlanGuardOutput is the most stdout the plan guard keeps. agy prints
+// one JSON object, far smaller than this. Tests lower it.
+var maxAgyPlanGuardOutput = 16 << 20
+
+// agyPlanGuard checks a read-only agy run after it exits 0. When agy wrote
+// a plan in that conversation, End returns a *NoAnswerError: the run
+// stopped to wait for approval. Output it cannot read, or a run with no
+// conversation_id, passes, and Parse reports any other problem.
+type agyPlanGuard struct {
+	home    string
+	out     []byte
+	tooLong bool
+}
+
+func (g *agyPlanGuard) Line(line []byte) error {
+	if g.tooLong {
+		return nil
+	}
+	if len(g.out)+len(line)+1 > maxAgyPlanGuardOutput {
+		g.tooLong, g.out = true, nil
+		return nil
+	}
+	g.out = append(g.out, line...)
+	g.out = append(g.out, '\n')
+	return nil
+}
+
+func (g *agyPlanGuard) End() error {
+	if g.tooLong {
+		return nil
+	}
+	var out struct {
+		ConversationID string `json:"conversation_id"`
+	}
+	if json.Unmarshal(bytes.TrimSpace(g.out), &out) != nil || !agyConversationID.MatchString(out.ConversationID) {
+		return nil
+	}
+	plan := agyPlanPath(g.home, out.ConversationID)
+	if _, err := os.Lstat(plan); err != nil {
+		return nil
+	}
+	return &NoAnswerError{Msg: "agy wrote a plan instead of an answer: " + plan}
+}
 
 // NewAgy returns the agy adapter. Its prompt input is verified; its
 // read-only setup is not, so the cli refuses read-only runs.
@@ -47,7 +117,11 @@ func (a *agy) Build(req Request, tc config.ToolConfig) (runner.Invocation, error
 	if err != nil {
 		return runner.Invocation{}, &SetupError{Err: err}
 	}
-	file, cleanup, err := writePromptFile(a.Name(), req.Prompt)
+	text := req.Prompt
+	if !req.Write {
+		text = agyPlanNote + "\n\n" + req.Prompt
+	}
+	file, cleanup, err := writePromptFile(a.Name(), text)
 	if err != nil {
 		return runner.Invocation{}, err
 	}
@@ -56,16 +130,21 @@ func (a *agy) Build(req Request, tc config.ToolConfig) (runner.Invocation, error
 	if model != "" {
 		args = append(args, "--model", model)
 	}
+	var guard runner.Guard
 	if req.Write {
 		args = append(args, "--mode", "accept-edits")
 	} else {
-		// Read-only candidate, untested.
+		// Read-only candidate, untested. Plan mode can end with a plan
+		// instead of an answer; the note and the guard handle that.
 		args = append(args, "--sandbox", "--mode", "plan")
+		if home, err := os.UserHomeDir(); err == nil {
+			guard = &agyPlanGuard{home: home}
+		}
 	}
 	if req.Effort != "" {
 		args = append(args, "--effort", req.Effort)
 	}
-	return runner.Invocation{Binary: bin, Args: args, Dir: req.Dir, Cleanup: cleanup}, nil
+	return runner.Invocation{Binary: bin, Args: args, Dir: req.Dir, Cleanup: cleanup, Guard: guard}, nil
 }
 
 // Parse reads agy --output-format json output: one JSON object. Final is
